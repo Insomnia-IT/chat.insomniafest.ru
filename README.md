@@ -2,13 +2,23 @@ After cloning:
 
 # Step 1
 
-`./download-element-apps.sh`
+`./bootstrap-env-file.sh`
 
 # Step 2
 
+`./download-element-apps.sh` - this will create an .env file
+
+# Step 3
+
 Configure nginx
 
-# Step 3 (if synapse if showing permission errors for `/data/media_store`)
+# Step 4
+
+`docker compose up -d`
+
+This will create the database and generate the `matrix.chat.signing.key` file.
+
+# If synapse if showing permission errors for `/data/media_store`
 
 ```
 mkdir config/synapse/media_store

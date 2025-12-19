@@ -1,7 +1,9 @@
 #!/bin/bash
 set -e
 
-cd nginx/html/downloads
+mkdir -p ./nginx/html/downloads
+cd ./nginx/html/downloads
+
 wget "https://packages.element.io/desktop/install/linux/glibc-x86-64/element-desktop-1.12.6.tar.gz" \
     -O element-desktop-linux-x86_64.tar.gz
 wget "https://packages.element.io/desktop/install/linux/glibc-aarch64/element-desktop-1.12.6-arm64.tar.gz"

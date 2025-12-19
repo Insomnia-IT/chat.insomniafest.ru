@@ -1,0 +1,26 @@
+{
+  "default_server_config": {
+    "m.homeserver": {
+      "base_url": "https://chat.insomniafest.ru",
+      "server_name": "chat.insomniafest.ru"
+    }
+  },
+
+  "disable_custom_urls": true,
+  "disable_guests": true,
+    "features": {
+    "registration": true
+  },
+  "room_directory": {
+    "servers": []
+  },
+
+  "brand": "Бессонный Чат",
+  "default_theme": "dark",
+  "default_locale": "ru",
+
+  "branding": {
+    "welcome_background_url": "assets/matrix-eye.png",
+    "auth_header_logo_url": "assets/besson.jpg"
+  }
+}

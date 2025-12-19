@@ -1,0 +1,9 @@
+.DS_Store
+nginx/html/downloads/*
+!nginx/html/downloads/.gitkeep
+data/postgres/*
+!data/postgres/.gitkeep
+.env
+.env.*
+config/synapse/homeserver.yaml
+*.key

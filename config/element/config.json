@@ -1,7 +1,7 @@
 {
   "default_server_config": {
     "m.homeserver": {
-      "base_url": "https://chat.insomniafest.ru",
+      "base_url": "https://synapse-chat.insomniafest.ru",
       "server_name": "chat.insomniafest.ru"
     }
   },

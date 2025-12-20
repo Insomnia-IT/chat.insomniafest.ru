@@ -2,7 +2,7 @@ After cloning:
 
 # Step 1
 
-`./bootstrap-env-file.sh`
+`./bootstrap-env-file.sh` - will generate an .env file with random strings for all parameters in the .env.example template
 
 # Step 2
 

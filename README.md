@@ -16,7 +16,7 @@ Configure nginx
 
 `docker compose up -d`
 
-This will create the database and generate the `matrix.chat.signing.key`  file.
+This will create the database and generate the `matrix.chat.signing.key` file.
 
 # If synapse if showing permission errors for `/data/media_store`
 

@@ -22,11 +22,11 @@ jobs:
 
     - name: Deploy via SSH
       run: |
-        ssh ${{ secrets.SRV_USER_NAME }}@${{ secrets.SRV_HOST }} << EOF
+        ssh -o StrictHostKeyChecking=no ${{ secrets.SRV_USER_NAME }}@${{ secrets.SRV_HOST }} 'bash -s' << 'ENDSSH'
           set -e
           BRANCH="main"
           DIR="/opt/insomnia-app/chat"
-          REPO="https://github.com/${{ github.repository }}"
+          REPO="https://github.com/'"${GITHUB_REPOSITORY}"'"
 
           mkdir -p "$DIR"
           cd "$DIR"
@@ -47,4 +47,4 @@ jobs:
           docker compose down || true
           docker compose build
           docker compose up -d
-        EOF
+        ENDSSH

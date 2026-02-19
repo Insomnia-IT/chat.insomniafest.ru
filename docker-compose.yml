@@ -67,6 +67,22 @@ services:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./nginx/html:/usr/share/nginx/html:ro
 
+  livekit:
+    image: livekit/livekit-server:latest
+    container_name: matrix_livekit
+    restart: unless-stopped
+    command: --config /etc/livekit.yaml
+    volumes:
+      - ./config/livekit/livekit.yaml:/etc/livekit.yaml:ro
+    networks:
+      - matrix
+    expose:
+      - "7880"
+      - "7881"
+    ports:
+      - "50000-50100:50000-50100/udp"
+
+
 networks:
   matrix:
     driver: bridge

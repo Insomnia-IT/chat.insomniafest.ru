@@ -6,6 +6,8 @@ set -eu
 : "${MACAROON_SECRET_KEY:?missing}"
 : "${FORM_SECRET:?missing}"
 : "${POSTGRES_PASSWORD:?missing}"
+: "${LIVEKIT_API_KEY:?missing}"
+: "${LIVEKIT_API_SECRET:?missing}"
 
 # Render homeserver.yaml from template
 sed \

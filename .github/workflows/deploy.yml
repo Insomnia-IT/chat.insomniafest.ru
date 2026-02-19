@@ -23,19 +23,22 @@ jobs:
 
     - name: Deploy via SSH
       run: |
-        ssh -o StrictHostKeyChecking=no ${{ secrets.SRV_USER_NAME }}@${{ secrets.SRV_HOST }} 'bash -s' << ENDSSH
+        ssh -o StrictHostKeyChecking=no ${{ secrets.SRV_USER_NAME }}@${{ secrets.SRV_HOST }} "bash -s" -- << ENDSSH
           set -e
           BRANCH="main"
           DIR="/opt/insomnia-app/chat"
-          REPO="https://github.com/${GITHUB_REPOSITORY}"
+          REPO="https://github.com/${{ github.repository }}"
 
           mkdir -p "$DIR"
           cd "$DIR"
-          
+
+          # Проверяем, существует ли директория и является ли она репозиторием Git
           if [ ! -d "$DIR/.git" ]; then
+            # Если нет, то клонируем репозиторий
             git clone -b "$BRANCH" "$REPO" "$DIR"
             cd "$DIR"
           else
+            # Если да, то переходим в директорию и выполняем git pull
             git fetch origin "$BRANCH"
             git checkout "$BRANCH"
             git pull origin "$BRANCH"

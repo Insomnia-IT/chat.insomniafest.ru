@@ -8,8 +8,9 @@
 
   "disable_custom_urls": true,
   "disable_guests": true,
-    "features": {
-    "registration": true
+  "features": {
+    "registration": false,
+    "feature_group_calls": true
   },
   "room_directory": {
     "servers": []

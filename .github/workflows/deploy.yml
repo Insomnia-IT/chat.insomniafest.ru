@@ -55,8 +55,8 @@ jobs:
           docker compose down || true
 
           # Start completely fresh - remove all data and keys
-          rm -rf data/
-          rm -rf config/synapse/*.key
+          sudo rm -rf data/
+          sudo rm -rf config/synapse/*.key
 
           docker compose build
           docker compose config --services

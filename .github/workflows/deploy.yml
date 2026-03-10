@@ -23,7 +23,7 @@ jobs:
 
     - name: Deploy via SSH
       run: |
-        ssh -o StrictHostKeyChecking=no ${{ secrets.SRV_USER_NAME }}@${{ secrets.SRV_HOST }} '
+        ssh -o StrictHostKeyChecking=no ${{ secrets.SRV_USER_NAME }}@${{ secrets.SRV_HOST }} << 'SCRIPT'
           set -e
           BRANCH="main"
           DIR="/opt/insomnia-app/chat"
@@ -41,14 +41,14 @@ jobs:
             git pull origin "$BRANCH"
           fi
 
-          cat > .env <<EOF
+          cat > .env <<'ENV'
           SYNAPSE_REGISTRATION_SHARED_SECRET=${{ secrets.SYNAPSE_REGISTRATION_SHARED_SECRET }}
           POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
           MACAROON_SECRET_KEY=${{ secrets.MACAROON_SECRET_KEY }}
           FORM_SECRET=${{ secrets.FORM_SECRET }}
           LIVEKIT_API_KEY=${{ secrets.LIVEKIT_API_KEY }}
           LIVEKIT_API_SECRET=${{ secrets.LIVEKIT_API_SECRET }}
-          EOF
+        ENV
 
           chmod 600 .env
 
@@ -61,5 +61,5 @@ jobs:
           docker compose build
           docker compose config --services
           docker compose up -d
-        '
+        SCRIPT
 

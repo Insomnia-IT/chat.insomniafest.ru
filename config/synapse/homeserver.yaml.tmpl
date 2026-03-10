@@ -1,4 +1,4 @@
-server_name: "synapse-chat.insomniafest.ru"
+server_name: "insomniafest.ru"
 pid_file: /data/homeserver.pid
 
 listeners:
@@ -33,10 +33,6 @@ macaroon_secret_key: "${MACAROON_SECRET_KEY}"
 form_secret: "${FORM_SECRET}"
 
 signing_key_path: "/data/matrix.chat.signing.key"
-old_signing_keys:
-  "ed25519:a_cROW":
-    key: "l4W7rinLcOWt3XdOq7QcmWwRjk5UAGdARj03Qku1O0Q"
-    expired_ts: 1766112000000
 
 trusted_key_servers:
   - server_name: "matrix.org"

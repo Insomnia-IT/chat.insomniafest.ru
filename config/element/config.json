@@ -1,8 +1,8 @@
 {
   "default_server_config": {
     "m.homeserver": {
-      "base_url": "https://synapse-chat.insomniafest.ru",
-      "server_name": "chat.insomniafest.ru"
+      "base_url": "https://synapse.insomniafest.ru",
+      "server_name": "insomniafest.ru"
     }
   },
 
@@ -13,7 +13,9 @@
     "feature_group_calls": true
   },
   "room_directory": {
-    "servers": []
+    "servers": [
+      "pole.insomniafest.ru"
+    ]
   },
 
   "brand": "Бессонный Чат",

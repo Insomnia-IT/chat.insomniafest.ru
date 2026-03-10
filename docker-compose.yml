@@ -24,7 +24,7 @@ services:
     env_file:
       - .env
     environment:
-      SYNAPSE_SERVER_NAME: synapse-chat.insomniafest.ru
+      SYNAPSE_SERVER_NAME: insomniafest.ru
       SYNAPSE_REPORT_STATS: "no"
       SYNAPSE_REGISTRATION_SHARED_SECRET: ${SYNAPSE_REGISTRATION_SHARED_SECRET}
       MACAROON_SECRET_KEY: ${MACAROON_SECRET_KEY}

@@ -48,6 +48,8 @@ jobs:
           FORM_SECRET=${{ secrets.FORM_SECRET }}
           LIVEKIT_API_KEY=${{ secrets.LIVEKIT_API_KEY }}
           LIVEKIT_API_SECRET=${{ secrets.LIVEKIT_API_SECRET }}
+          TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}
+          GRIST_API_KEY=${{ secrets.GRIST_API_KEY }}
         ENV
 
           chmod 600 .env

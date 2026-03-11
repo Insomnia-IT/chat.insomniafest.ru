@@ -82,6 +82,29 @@ services:
     ports:
       - "50000-50100:50000-50100/udp"
 
+  telegram-bot:
+    build:
+      context: ./telegram-bot
+      dockerfile: Dockerfile
+    container_name: matrix_telegram_bot
+    restart: unless-stopped
+    depends_on:
+      - synapse
+    env_file:
+      - .env
+    environment:
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      SYNAPSE_REGISTRATION_SHARED_SECRET: ${SYNAPSE_REGISTRATION_SHARED_SECRET}
+      GRIST_API_KEY: ${GRIST_API_KEY}
+      OWNER_TELEGRAM_ID: ${OWNER_TELEGRAM_ID}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    networks:
+      - matrix
+
   synapse-admin:
     image: awesometechnologies/synapse-admin:latest
     container_name: matrix_admin

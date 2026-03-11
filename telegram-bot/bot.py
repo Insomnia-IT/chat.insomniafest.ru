@@ -55,6 +55,7 @@ HTTP_RETRIES = 2
 # Grist eligibility cache
 GRIST_ALLOWED_STATUS_CODES = ("PLANNED", "STARTED", "COMPLETE")
 GRIST_CACHE_FULL_SYNC_INTERVAL = 600  # seconds
+grist_sql_available = True
 grist_cache_lock = asyncio.Lock()
 grist_handle_to_record_id = {}
 grist_max_record_id = 0
@@ -134,9 +135,41 @@ async def fetch_grist_records_sql(query: str) -> list:
     return data.get("records", [])
 
 
+async def fetch_grist_records_via_records_api() -> list:
+    """Fetch eligible records using Grist records API as a fallback."""
+    url = f"https://grist.insomniafest.ru/api/docs/{GRIST_DOC_ID}/tables/{GRIST_TABLE_ID}/records"
+    headers = {
+        "Authorization": f"Bearer {GRIST_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    params = {
+        "filter": (
+            "{"
+            '"year":[2026],'
+            '"status_code":["PLANNED","STARTED","COMPLETE"]'
+            "}"
+        )
+    }
+
+    async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+        response = await request_with_retries(
+            client,
+            "GET",
+            url,
+            params=params,
+            headers=headers,
+        )
+
+    if response.status_code != 200:
+        raise RuntimeError(f"Grist records API error: {response.status_code} {response.text}")
+
+    data = response.json()
+    return data.get("records", [])
+
+
 async def sync_grist_cache(force_full: bool = False) -> bool:
     """Sync eligibility cache from Grist (incremental by default)."""
-    global grist_max_record_id, grist_last_full_sync
+    global grist_max_record_id, grist_last_full_sync, grist_sql_available
 
     async with grist_cache_lock:
         now = time.time()
@@ -147,21 +180,40 @@ async def sync_grist_cache(force_full: bool = False) -> bool:
         )
 
         min_record_id = 0 if do_full_sync else grist_max_record_id
-        query = build_grist_sql_query(min_record_id=min_record_id)
+        records = []
+        incremental_used = False
 
-        try:
-            records = await fetch_grist_records_sql(query)
-        except Exception as e:
-            logger.error(f"Failed to sync Grist cache: {e}")
-            return False
+        if grist_sql_available:
+            query = build_grist_sql_query(min_record_id=min_record_id)
+            try:
+                records = await fetch_grist_records_sql(query)
+                incremental_used = True
+            except Exception as e:
+                err_text = str(e)
+                if "403" in err_text or "insufficient document access" in err_text.lower():
+                    grist_sql_available = False
+                    logger.warning("Grist SQL API is unavailable for this token, switching to records API fallback")
+                else:
+                    logger.error(f"Failed to sync Grist cache: {e}")
+                    return False
 
-        if do_full_sync:
+        if not grist_sql_available:
+            try:
+                records = await fetch_grist_records_via_records_api()
+                incremental_used = False
+            except Exception as e:
+                logger.error(f"Failed to sync Grist cache via records API: {e}")
+                return False
+
+        if do_full_sync or not incremental_used:
             grist_handle_to_record_id.clear()
             grist_max_record_id = 0
 
         for record in records:
             fields = record.get("fields", {})
             record_id = fields.get("id")
+            if record_id is None:
+                record_id = record.get("id")
             telegram2 = fields.get("Telegram2")
             if not telegram2:
                 continue
@@ -179,7 +231,7 @@ async def sync_grist_cache(force_full: bool = False) -> bool:
             if record_id > grist_max_record_id:
                 grist_max_record_id = record_id
 
-        if do_full_sync:
+        if do_full_sync or not incremental_used:
             grist_last_full_sync = now
             logger.info(
                 f"Grist full sync complete: {len(grist_handle_to_record_id)} handles, max_id={grist_max_record_id}"

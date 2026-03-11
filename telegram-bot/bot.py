@@ -330,7 +330,7 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         
         # Register user in Synapse
         temp_password = secrets.token_urlsafe(12)
-        success = await register_synapse_user(username, temp_password)
+        success, registration_error_code = await register_synapse_user(username, temp_password)
         
         if success:
             escaped_username = escape_markdown(username, version=1)
@@ -346,6 +346,15 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 📖 **Помощь:** {HELP_URL}
             """
             await update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
+        elif registration_error_code == "M_USER_IN_USE":
+            await update.message.reply_text(
+                f"""⚠️ Похоже, учетная запись "{username}" уже существует.
+
+🔗 Попробуйте войти тут: {ELEMENT_URL}
+📖 Помощь: {HELP_URL}
+
+Если не получается войти, напишите администраторам для сброса пароля."""
+            )
         else:
             await update.message.reply_text("❌ Не удалось создать учетную запись. Пожалуйста, попробуйте позже.")
             
@@ -438,7 +447,7 @@ async def check_user_eligibility(telegram_handle: str) -> tuple[bool, bool]:
         return False, False
 
 
-async def register_synapse_user(username: str, password: str) -> bool:
+async def register_synapse_user(username: str, password: str) -> tuple[bool, str | None]:
     """Register a user in Synapse using the shared secret method."""
     try:
         async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
@@ -452,13 +461,13 @@ async def register_synapse_user(username: str, password: str) -> bool:
                 logger.error(
                     f"Failed nonce request for {username}: {nonce_response.status_code} {nonce_response.text}"
                 )
-                return False
+                return False, "NONCE_REQUEST_FAILED"
             nonce_data = nonce_response.json()
             nonce = nonce_data.get('nonce')
             
             if not nonce:
                 logger.error(f"Failed to obtain nonce for {username}")
-                return False
+                return False, "NONCE_MISSING"
             
             # Step 2: Compute HMAC-SHA1
             admin_flag = "notadmin"
@@ -484,14 +493,26 @@ async def register_synapse_user(username: str, password: str) -> bool:
             
             if register_response.status_code == 200:
                 logger.info(f"User {username} registered successfully")
-                return True
+                return True, None
             else:
-                logger.error(f"Failed to register user {username}: {register_response.status_code} {register_response.text}")
-                return False
+                error_code = None
+                try:
+                    error_code = register_response.json().get("errcode")
+                except Exception:
+                    error_code = None
+
+                if register_response.status_code == 400 and error_code == "M_USER_IN_USE":
+                    logger.warning(f"User {username} already exists in Synapse")
+                    return False, "M_USER_IN_USE"
+
+                logger.error(
+                    f"Failed to register user {username}: {register_response.status_code} {register_response.text}"
+                )
+                return False, error_code or "REGISTER_FAILED"
                 
     except Exception as e:
         logger.error(f"Error registering user {username}: {e}")
-        return False
+        return False, "REGISTER_EXCEPTION"
 
 
 def main() -> None:

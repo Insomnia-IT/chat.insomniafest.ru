@@ -82,6 +82,14 @@ services:
     ports:
       - "50000-50100:50000-50100/udp"
 
+  synapse-admin:
+    image: awesometechnologies/synapse-admin:latest
+    container_name: matrix_admin
+    restart: unless-stopped
+    networks:
+      - matrix
+    expose:
+      - "80"
 
 networks:
   matrix:

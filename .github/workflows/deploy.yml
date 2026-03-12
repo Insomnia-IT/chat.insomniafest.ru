@@ -54,9 +54,7 @@ jobs:
 
           chmod 600 .env
 
-          docker compose down || true
-          docker compose build
-          docker compose config --services
-          docker compose up -d
+          docker compose pull || true
+          docker compose up -d --build --remove-orphans
         SCRIPT
 

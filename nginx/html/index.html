@@ -2,193 +2,409 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <title>Бессонный Чат</title>
+    <title>Бессонный Чат: канал связи для волонтеров Бессонницы на технологии Matrix</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
+        @import url("https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700;800&family=IBM+Plex+Sans:wght@400;500;600&display=swap");
+
         :root {
-            color-scheme: dark;
+            --bg-main: #f7f4ec;
+            --bg-card: rgba(255, 255, 255, 0.82);
+            --text-main: #1f2a22;
+            --text-muted: #425347;
+            --line: rgba(34, 52, 40, 0.12);
+            --accent: #1c9d72;
+            --accent-2: #e58b2a;
+            --accent-dark: #0f6a4f;
+            --shadow: 0 14px 38px rgba(28, 49, 37, 0.14);
         }
+
         * {
             box-sizing: border-box;
         }
+
         body {
-            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
             margin: 0;
-            padding: 2rem 1rem 3rem;
-            color: #f5f5f5;
-            background: radial-gradient(circle at top, #10152b 0, #050712 60%, #020208 100%);
-            background: #000 url(matrix-eye.png) center no-repeat;
-            background-attachment: fixed;
+            padding: 1.25rem 0.9rem 2.5rem;
+            color: var(--text-main);
+            font-family: "IBM Plex Sans", "Noto Sans", sans-serif;
+            background:
+                radial-gradient(1000px 480px at 12% -5%, rgba(243, 188, 88, 0.28), transparent 65%),
+                radial-gradient(920px 460px at 88% 0%, rgba(72, 180, 138, 0.25), transparent 62%),
+                var(--bg-main);
         }
+
         .wrapper {
-            max-width: 900px;
+            max-width: 980px;
             margin: 0 auto;
         }
+
         header {
-            margin-bottom: 1.5rem;
+            margin-bottom: 1rem;
             text-align: center;
         }
+
         header img {
-            width: 120px;
-            border-radius: 10%;
+            width: 98px;
+            border-radius: 22px;
+            border: 2px solid rgba(255, 255, 255, 0.85);
+            box-shadow: 0 10px 24px rgba(18, 45, 32, 0.2);
         }
+
         h1 {
-            font-size: 2rem;
-            margin: 0 0 0.5rem;
+            margin: 0.6rem 0 0.5rem;
+            font-family: "Manrope", "Noto Sans", sans-serif;
+            font-size: clamp(1.7rem, 4.9vw, 2.6rem);
+            line-height: 1.08;
+            letter-spacing: -0.02em;
         }
+
         h2 {
-            margin: 1.5rem 0 0.75rem;
-            font-size: 1.3rem;
+            margin: 0 0 1.5rem;
+            font-family: "Manrope", "Noto Sans", sans-serif;
+            font-size: clamp(1.22rem, 3.4vw, 1.55rem);
+            line-height: 1.15;
         }
+
         h3 {
-            margin: 1rem 0 0.5rem;
-            font-size: 1.05rem;
+            margin: 1rem 0 0.48rem;
+            font-size: 1.02rem;
         }
+
         p {
-            margin: 0.4rem 0;
+            margin: 0.35rem 0;
+            line-height: 1.48;
         }
+
         ul {
             margin: 0.4rem 0 0.8rem;
             padding-left: 1.2rem;
         }
+
         li {
             margin: 0.25rem 0;
         }
+
         .card {
-            background: rgba(9, 12, 28, 0.95);
-            border-radius: 16px;
-            padding: 1.5rem 1.3rem;
+            background: var(--bg-card);
+            backdrop-filter: blur(8px);
+            border-radius: 22px;
+            padding: 1.25rem 1rem;
             margin-top: 1.1rem;
-            border: 1px solid rgba(88, 101, 242, 0.15);
-            box-shadow: 0 14px 40px rgba(0, 0, 0, 0.45);
+            border: 1px solid var(--line);
+            box-shadow: var(--shadow);
         }
+
+        .hero {
+            position: relative;
+            overflow: hidden;
+            background:
+                linear-gradient(130deg, rgba(17, 147, 109, 0.15), rgba(221, 142, 58, 0.13)),
+                rgba(255, 255, 255, 0.88);
+            text-align: center;
+        }
+
+        .hero::after {
+            content: "";
+            position: absolute;
+            width: 180px;
+            height: 180px;
+            border-radius: 50%;
+            right: -58px;
+            top: -72px;
+            background: radial-gradient(circle, rgba(229, 139, 42, 0.35), transparent 68%);
+            pointer-events: none;
+        }
+
+        .lead {
+            font-size: 1.02rem;
+            color: var(--text-muted);
+        }
+
+        .top-cta {
+            display: flex;
+            justify-content: center;
+            flex-wrap: wrap;
+            gap: 0.65rem;
+            margin: 0.85rem 0 1.05rem;
+        }
+
+        .top-cta .btn {
+            flex: 1 1 280px;
+            max-width: 360px;
+            padding: 0.9rem 1.6rem;
+            font-size: 1.04rem;
+            font-weight: 700;
+            letter-spacing: 0.01em;
+        }
+
+        .btn.enter-chat {
+            background: linear-gradient(140deg, #18a678, #0f6a4f);
+            border-color: #0f6a4f;
+            color: #f8fffb;
+            box-shadow: 0 12px 26px rgba(16, 91, 66, 0.28);
+        }
+
+        .btn.enter-chat:hover {
+            background: linear-gradient(140deg, #1cb484, #127a5b);
+        }
+
+        .btn.download-app {
+            background: linear-gradient(140deg, #21b183, #147a5d);
+            border-color: #147a5d;
+            color: #f8fffb;
+            box-shadow: 0 12px 26px rgba(16, 91, 66, 0.24);
+        }
+
+        .btn.download-app:hover {
+            background: linear-gradient(140deg, #25bd8d, #188969);
+        }
+
         .buttons {
             display: flex;
             flex-wrap: wrap;
-            gap: 0.75rem;
-            margin-top: 0.8rem;
+            gap: 0.62rem;
+            margin-top: 0.75rem;
         }
+
         .btn {
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            padding: 0.75rem 1.3rem;
+            padding: 0.68rem 1.08rem;
             border-radius: 999px;
             text-decoration: none;
-            border: 1px solid #2f364f;
-            color: #f5f5f5;
-            font-size: 0.95rem;
+            border: 1px solid rgba(22, 62, 46, 0.2);
+            color: #174231;
+            font-weight: 600;
+            font-size: 0.92rem;
             white-space: nowrap;
-            background: transparent;
+            background: rgba(255, 255, 255, 0.74);
             transition: background 0.15s ease, transform 0.1s ease, box-shadow 0.15s ease, border-color 0.15s ease;
         }
+
         .btn.primary {
-            background: #0dbd8b;
-            border-color: #0dbd8b;
-            color: #020308;
+            background: var(--accent);
+            border-color: var(--accent);
+            color: #f8fffb;
             font-weight: 600;
         }
+
         .btn:hover {
             transform: translateY(-1px);
-            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
-            border-color: #4b54ff;
+            box-shadow: 0 10px 24px rgba(30, 69, 49, 0.2);
+            border-color: var(--accent-dark);
         }
+
         .btn.primary:hover {
-            background: #13d79f;
+            background: #1cb484;
         }
+
+        .text-link {
+            color: var(--accent);
+            text-decoration: none;
+            font-weight: 600;
+        }
+
+        .text-link:hover,
+        .text-link:focus-visible {
+            color: var(--accent-dark);
+            text-decoration: underline;
+        }
+
         .note {
             font-size: 0.88rem;
-            opacity: 0.82;
+            color: var(--text-muted);
             margin-top: 0.5rem;
         }
+
         ol {
             margin: 0.3rem 0 0.5rem;
             padding-left: 1.4rem;
         }
+
         ol li {
             margin-bottom: 0.35rem;
         }
+
         code {
-            background: #1a1f33;
+            background: rgba(22, 47, 35, 0.09);
             padding: 0.08rem 0.25rem;
             border-radius: 4px;
             font-size: 0.88em;
         }
-        footer {
-            margin-top: 1.8rem;
+
+        .grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 1rem;
+        }
+
+        .steps {
+            counter-reset: quick;
+            margin: 0;
+            padding: 0;
+            list-style: none;
+        }
+
+        .steps li {
+            display: grid;
+            grid-template-columns: 2rem 1fr;
+            gap: 0.62rem;
+            align-items: start;
+            margin: 0.85rem 0;
+        }
+
+        .steps li::before {
+            counter-increment: quick;
+            content: counter(quick);
+            width: 2rem;
+            height: 2rem;
+            border-radius: 999px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            color: #fff;
+            background: linear-gradient(140deg, var(--accent), var(--accent-dark));
+            box-shadow: 0 7px 14px rgba(16, 91, 66, 0.28);
+        }
+
+        .warning {
+            border: 1px solid rgba(181, 102, 18, 0.25);
+            background: rgba(242, 193, 130, 0.14);
+            border-radius: 14px;
+            padding: 0.85rem 0.9rem;
+            margin-top: 0.7rem;
+        }
+
+        .warning strong {
+            color: #814b10;
+        }
+
+        .diff-list {
+            margin: 0;
+            padding: 0;
+            list-style: none;
+        }
+
+        .diff-list li {
+            margin: 0.78rem 0;
+            padding-left: 0.92rem;
+            border-left: 3px solid rgba(25, 136, 102, 0.34);
+        }
+
+        .chip-row {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 0.5rem;
+            margin-top: 0.75rem;
+        }
+
+        .chip {
             font-size: 0.8rem;
-            opacity: 0.75;
+            font-weight: 600;
+            color: #215342;
+            background: rgba(28, 157, 114, 0.14);
+            border: 1px solid rgba(28, 157, 114, 0.2);
+            border-radius: 999px;
+            padding: 0.28rem 0.55rem;
+        }
+
+        footer {
+            margin-top: 1.45rem;
+            font-size: 0.82rem;
+            color: var(--text-muted);
+            text-align: center;
+        }
+
+        @media (min-width: 760px) {
+            body {
+                padding: 2rem 1.4rem 3rem;
+            }
+
+            .card {
+                padding: 1.45rem 1.35rem;
+            }
+
+            .grid {
+                grid-template-columns: 1fr 1fr;
+            }
         }
     </style>
 </head>
 <body>
 <div class="wrapper">
     <header>
-        <div>
-            <img src="besson.jpg" />
-        </div>
+        <img src="besson.jpg" alt="Это Люк Бессонный" />
         <div>
             <h1>Бессонный Чат</h1>
-            <p>Мессенджер для волонтеров Бессонницы. Работает без интернета!</p>
+            <p class="lead">Канал связи для волонтеров Бессонницы</p>
+            <p class="lead">Переходим на собственный мессенджер, чтобы связь команды не зависела от внешних рисков</p>
         </div>
     </header>
 
-    <div class="card">
-        <h2>1. Скачайте приложение Element или используйте версию для браузера (см. п. 3)</h2>
-        <p>Выберите приложение для своего устройства (iOS, увы, в пролете, пробуйте браузерную версию):</p>
-        <div class="buttons">
-            <a class="btn primary" href="/downloads/element.apk">Android</a>
-            <a class="btn" href="/downloads/Element.exe">Windows</a>
-            <a class="btn" href="/downloads/Element.dmg">macOS</a>
-            <a class="btn" href="/downloads/element-desktop-linux-x86_64.tar.gz">Linux (x86-64)</a>
-            <a class="btn" href="/downloads/element-desktop-linux-arm64.tar.gz">Linux (arm)</a>
+    <div class="top-cta">
+        <a class="btn enter-chat" href="https://chat.insomniafest.ru">Войти в чат</a>
+        <a class="btn download-app" href="https://element.io/en/download">Скачать приложение</a>
+    </div>
+
+    <div class="card hero">
+        <h2>Нам нужен устойчивый канал связи для волонтеров</h2>
+        <p>Телега может стать недоступной или нестабильной, а теперь у нас всё будет на собственном сервере.</p>
+        <div class="chip-row">
+            <span class="chip">Свой сервер</span>
+            <span class="chip">Работа в браузере и приложениях</span>
+            <span class="chip">Сквозное шифрование</span>
+            <span class="chip">Звонки (в разработке)</span>
         </div>
-        <p class="note">
-            На Android включите установку из неизвестных источников и откройте файл
-            <code>element.apk</code>. На Windows и macOS установите Element как обычную программу.
-        </p>
     </div>
 
     <div class="card">
-        <h2>2. Подключить приложение к серверу</h2>
-        <p>Во всех приложениях используйте этот адрес сервера (homeserver):</p>
-        <p><strong>Адрес сервера (homeserver URL):</strong> <code>http://synapse-chat.insomniafest.ru</code></p>
-
-        <h3>Android / iOS (Element Mobile)</h3>
-        <ol>
-            <li>Откройте приложение Element.</li>
-            <li>Выберите «Создать аккаунт» или «Войти».</li>
-            <li>Нажмите «Другой сервер» / «Custom server».</li>
-            <li>В поле сервера введите: <code>http://synapse-chat.insomniafest.ru</code>.</li>
-            <li>Продолжите регистрацию или вход по инструкции в приложении.</li>
-        </ol>
-
-        <h3>Windows / macOS (Element Desktop)</h3>
-        <ol>
-            <li>Запустите Element на компьютере.</li>
-            <li>На экране входа выберите «Другой сервер» или «Use custom server».</li>
-            <li>Укажите сервер: <code>http://synapse-chat.insomniafest.ru</code>.</li>
-            <li>Зарегистрируйте новый аккаунт или войдите в существующий.</li>
+        <h2>Пошаговая Инструкция</h2>
+        <ol class="steps">
+            <li>
+                <div>
+                    <strong>Скачай Element</strong>
+                    <p>Есть приложения для <a class="text-link" href="https://element.io/en/download">Android, iOS, Windows, macOS или Linux</a>, или используйте веб-версию на <a class="text-link" href="https://chat.insomniafest.ru">chat.insomniafest.ru</a> (работает в любом браузере, но в мобильных браузерах может быть ограничена функциональность).</p>
+                </div>
+            </li>
+            <li>
+                <div>
+                    <strong>Зарегистрируйся в нашем ТГ боте (пока телега еще работает)</strong>
+                    <p>Бот для регистрации: <a class="text-link" href="https://t.me/insomnia_chat_registration_bot">@insomnia_chat_registration_bot</a>. <strong>Важно: обязательно скажите своему HR-менеджеру добавить вас в список волонтеров 2026.</strong> При входе в Element нужно выбрать опцию "другой домашний сервер" и указать <code>insomniafest.ru</code> (<a class="text-link" href="homeserver.png">вот так</a>). После входа сразу смените пароль.</p>
+                </div>
+            </li>
+            <li>
+                <div>
+                    <strong>Про сквозное шифрование (или как не потерять историю сообщений)</strong>
+                    <p>В нашем чате можно создавать группы (они тут называются комнатами) с шифрованием и без. Ключи шифрования хранятся на ваших устройствах. Это означает, что если вы потеряете единственное устройство, с которого вы заходите в чат, вы потеряете доступ к зашифрованным сообщениям. Этого можно лего избежать: в настройках шифрования нужно разрешить "хранение ключей" и обязательно сохранить ключ восстановления (по-сути это еще один пароль) в безопасном месте (ведь уже все пользуются менеджерами паролей?). Второй вариант - залогиниться на двух (или больше) устройствах одновременно (тогда новое устройство получит ключи от старого).</p>
+                </div>
+            </li>
         </ol>
     </div>
 
-    <div class="card">
-        <h2>3. Использовать веб-версию (без установки)</h2>
-        <p>Можно пользоваться чатом прямо из браузера на этом устройстве.</p>
-        <div class="buttons">
-            <a class="btn primary" href="https://web-chat.insomniafest.ru">Открыть веб-версию Element</a>
+    <div class="grid">
+        <div class="card">
+            <h2>Как устроены Matrix и Element</h2>
+            <ul>
+                <li><strong>Matrix</strong> это протокол и сервер (у нас свой сервер).</li>
+                <li><strong>Element</strong> это клиентское приложение (как браузер для Matrix).</li>
+                <li><strong>Комнаты</strong> это чаты: по направлениям, службам, локациям.</li>
+                <li>Можно войти на нескольких устройствах под одним аккаунтом.</li>
+            </ul>
         </div>
-        <p class="note">
-            На телефоне, если браузер пишет, что «десктопная версия не поддерживается», включите
-            «Версия для ПК» / «Request desktop site» в меню браузера.  Веб-интерфейс Element будет
-            работать внутри локальной сети.
-        </p>
-    </div>
 
-    <footer>
-        Устройство (телефон, ноутбук и т. д.) должно быть подключено к той же локальной сети,
-        что и сервер <code>chat.insomniafest.ru</code>. Доступ в интернет не требуется.
-    </footer>
+        <div class="card">
+            <h2>Чем это отличается от привычных мессенджеров</h2>
+            <ul class="diff-list">
+                <li>Данные и учетные записи живут на нашем сервере.</li>
+                <li>Можно использовать разные клиенты, не только Element (они должны быть совместимы с протоколом Matrix).</li>
+                <li>Сквозное шифровение (ключи на ваших устройствах).</li>
+            </ul>
+        </div>
+    </div>
 </div>
 </body>
 </html>

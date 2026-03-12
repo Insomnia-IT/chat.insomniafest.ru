@@ -82,23 +82,6 @@ services:
     ports:
       - "50000-50100:50000-50100/udp"
 
-  rtc-focus:
-    image: vectorim/matrix-rtc-focus:latest
-    container_name: matrix_rtc_focus
-    restart: unless-stopped
-    env_file:
-      - .env
-    environment:
-      LIVEKIT_URL: http://livekit:7880
-      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
-      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
-      HOMESERVER_URL: https://synapse.insomniafest.ru
-      HOMESERVER_DOMAIN: insomniafest.ru
-    networks:
-      - matrix
-    expose:
-      - "8080"
-
   telegram-bot:
     build:
       context: ./telegram-bot

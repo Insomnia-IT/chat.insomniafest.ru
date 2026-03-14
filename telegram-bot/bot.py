@@ -299,6 +299,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send a message when the command /start is issued."""
     message = """
 Привет! Я бот для регистрации в чате для волонтеров. Чтобы зарегистрироваться, отправьте команду /register.
+
+Важно: ваш аккаунт в нашем чате будет создан с тем же именем пользователя, что и тут в Telegram, чтобы ваши друзья и коллеги могли легко вас найти.
     """
     await update.message.reply_text(message)
 

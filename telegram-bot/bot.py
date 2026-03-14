@@ -27,10 +27,12 @@ SYNAPSE_API_URL = "https://synapse.insomniafest.ru"
 SYNAPSE_SERVER_NAME = os.getenv('SYNAPSE_SERVER_NAME', 'insomniafest.ru')
 ELEMENT_URL = "https://chat.insomniafest.ru"
 HELP_URL = "https://chat.insomniafest.ru/help"
+ADMIN_URL = "https://chat.insomniafest.ru/admin/"
 AUTO_JOIN_ROOMS = (
     '#announcements:insomniafest.ru',
     '#general:insomniafest.ru',
 )
+ORGS_ROOM = '#orgs:insomniafest.ru'
 GRIST_DOC_ID = "mhwDM83vLmT3"
 GRIST_TABLE_ID = "Participations"
 
@@ -66,6 +68,7 @@ grist_sql_available = True
 grist_cache_lock = asyncio.Lock()
 grist_handle_to_record_id = {}
 grist_handle_to_person_name = {}
+grist_handle_to_role = {}
 grist_max_record_id = 0
 grist_last_full_sync = 0.0
 
@@ -107,7 +110,7 @@ def build_grist_sql_query(min_record_id: int = 0) -> str:
     statuses = ", ".join(f"'{status}'" for status in GRIST_ALLOWED_STATUS_CODES)
     min_id_clause = f"AND id > {min_record_id}" if min_record_id > 0 else ""
     return (
-        "SELECT id, Telegram2, person_name "
+        "SELECT id, Telegram2, person_name, role "
         f"FROM {GRIST_TABLE_ID} "
         "WHERE year = 2026 "
         f"AND status_code IN ({statuses}) "
@@ -216,6 +219,7 @@ async def sync_grist_cache(force_full: bool = False) -> bool:
         if do_full_sync or not incremental_used:
             grist_handle_to_record_id.clear()
             grist_handle_to_person_name.clear()
+            grist_handle_to_role.clear()
             grist_max_record_id = 0
 
         for record in records:
@@ -227,6 +231,7 @@ async def sync_grist_cache(force_full: bool = False) -> bool:
             if not telegram2:
                 continue
             person_name = fields.get("person_name")
+            role = fields.get("role")
 
             try:
                 record_id = int(record_id)
@@ -242,6 +247,10 @@ async def sync_grist_cache(force_full: bool = False) -> bool:
                 grist_handle_to_person_name[normalized] = person_name.strip()
             else:
                 grist_handle_to_person_name.pop(normalized, None)
+            try:
+                grist_handle_to_role[normalized] = int(role)
+            except (TypeError, ValueError):
+                grist_handle_to_role.pop(normalized, None)
             if record_id > grist_max_record_id:
                 grist_max_record_id = record_id
 
@@ -330,7 +339,7 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("Проверяю вашу благонадежность...")
         
         # Check if user is in the Grist list
-        is_eligible, eligibility_check_ok, person_name = await check_user_eligibility(username)
+        is_eligible, eligibility_check_ok, person_name, grist_role = await check_user_eligibility(username)
 
         if not eligibility_check_ok:
             await update.message.reply_text(
@@ -346,7 +355,12 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         
         # Register user in Synapse
         temp_password = secrets.token_urlsafe(12)
-        success, registration_error_code = await register_synapse_user(username, temp_password)
+        is_synapse_admin = grist_role in (1, 2)
+        success, registration_error_code = await register_synapse_user(
+            username,
+            temp_password,
+            is_admin=is_synapse_admin,
+        )
         
         if success:
             if person_name:
@@ -354,16 +368,26 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 if not displayname_ok:
                     logger.warning(f"Could not set display name for {username} to '{person_name}'")
 
-            join_ok, failed_rooms = await join_user_to_default_rooms(username)
+            room_aliases = list(AUTO_JOIN_ROOMS)
+            if is_synapse_admin:
+                room_aliases.append(ORGS_ROOM)
+
+            join_ok, failed_rooms = await join_user_to_rooms(username, room_aliases)
             escaped_username = escape_markdown(username, version=1)
             escaped_password = escape_markdown(temp_password, version=1)
+            admin_message = ""
+            if is_synapse_admin:
+                admin_message = (
+                    "\nТак вы еще и организатор? Мое почтение! В таком случае у вас будет доступ еще и"
+                    f"к интерфейсу администрирования: {ADMIN_URL}\n"
+                )
             message = f"""✅ Поздравляем!
 
 Вы можете войти в чат для волонтеров, используя следующие учетные данные:
 
 **Имя пользователя:** {escaped_username}
 **Временный пароль:** {escaped_password} (поменяйте его при первом входе)
-
+{admin_message}
 🔗 **Ссылка на чат:** {ELEMENT_URL}
 📖 **Помощь:** {HELP_URL}
             """
@@ -447,12 +471,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
 
 
-async def check_user_eligibility(telegram_handle: str) -> tuple[bool, bool, str | None]:
-    """Return (is_eligible, check_ok, person_name) using in-memory Grist cache."""
+async def check_user_eligibility(telegram_handle: str) -> tuple[bool, bool, str | None, int | None]:
+    """Return (is_eligible, check_ok, person_name, role) using in-memory Grist cache."""
     try:
         if not telegram_handle:
             logger.warning("Empty telegram handle provided")
-            return False, True, None
+            return False, True, None, None
 
         handle = normalize_telegram_handle(telegram_handle)
 
@@ -461,7 +485,7 @@ async def check_user_eligibility(telegram_handle: str) -> tuple[bool, bool, str 
             logger.info(
                 f"User {handle} found in Grist cache (record_id={grist_handle_to_record_id[handle]})"
             )
-            return True, True, grist_handle_to_person_name.get(handle)
+            return True, True, grist_handle_to_person_name.get(handle), grist_handle_to_role.get(handle)
 
         # Cache miss: try syncing once, then re-check.
         sync_ok = await sync_grist_cache(force_full=False)
@@ -469,23 +493,23 @@ async def check_user_eligibility(telegram_handle: str) -> tuple[bool, bool, str 
         # If Grist is temporarily unavailable, keep serving from stale cache.
         if not sync_ok and not grist_handle_to_record_id:
             logger.warning("Grist cache unavailable and empty")
-            return False, False, None
+            return False, False, None, None
 
         if handle in grist_handle_to_record_id:
             logger.info(
                 f"User {handle} found in Grist cache after sync (record_id={grist_handle_to_record_id[handle]})"
             )
-            return True, True, grist_handle_to_person_name.get(handle)
+            return True, True, grist_handle_to_person_name.get(handle), grist_handle_to_role.get(handle)
 
         logger.warning(f"User {handle} not found in Grist cache")
-        return False, True, None
+        return False, True, None, None
             
     except Exception as e:
         logger.error(f"Error checking eligibility for {telegram_handle}: {e}")
-        return False, False, None
+        return False, False, None, None
 
 
-async def register_synapse_user(username: str, password: str) -> tuple[bool, str | None]:
+async def register_synapse_user(username: str, password: str, is_admin: bool = False) -> tuple[bool, str | None]:
     """Register a user in Synapse using the shared secret method."""
     try:
         async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
@@ -508,7 +532,7 @@ async def register_synapse_user(username: str, password: str) -> tuple[bool, str
                 return False, "NONCE_MISSING"
             
             # Step 2: Compute HMAC-SHA1
-            admin_flag = "notadmin"
+            admin_flag = "admin" if is_admin else "notadmin"
             msg = "\x00".join([nonce, username, password, admin_flag]).encode("utf-8")
             secret_bytes = SYNAPSE_ADMIN_TOKEN.encode("utf-8")
             mac = hmac.new(secret_bytes, msg, hashlib.sha1).hexdigest()
@@ -518,7 +542,7 @@ async def register_synapse_user(username: str, password: str) -> tuple[bool, str
                 "nonce": nonce,
                 "username": username,
                 "password": password,
-                "admin": False,
+                "admin": is_admin,
                 "mac": mac
             }
             
@@ -599,14 +623,14 @@ def to_mxid(localpart: str) -> str:
     return f"@{localpart}:{SYNAPSE_SERVER_NAME}"
 
 
-async def join_user_to_default_rooms(username: str) -> tuple[bool, list[str]]:
-    """Join a local user to default rooms using Synapse Admin API."""
-    if not AUTO_JOIN_ROOMS:
+async def join_user_to_rooms(username: str, room_aliases: list[str] | tuple[str, ...]) -> tuple[bool, list[str]]:
+    """Join a local user to rooms using Synapse Admin API."""
+    if not room_aliases:
         return True, []
 
     if not SYNAPSE_ADMIN_ACCESS_TOKEN:
-        logger.warning("SYNAPSE_ADMIN_ACCESS_TOKEN is not set; skipping auto-join to default rooms")
-        return False, list(AUTO_JOIN_ROOMS)
+        logger.warning("SYNAPSE_ADMIN_ACCESS_TOKEN is not set; skipping auto-join to rooms")
+        return False, list(room_aliases)
 
     user_id = to_mxid(username)
     headers = {
@@ -618,7 +642,7 @@ async def join_user_to_default_rooms(username: str) -> tuple[bool, list[str]]:
 
     try:
         async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
-            for room in AUTO_JOIN_ROOMS:
+            for room in room_aliases:
                 room_id_or_alias = quote(room, safe='')
                 response = await request_with_retries(
                     client,
@@ -636,7 +660,7 @@ async def join_user_to_default_rooms(username: str) -> tuple[bool, list[str]]:
 
     except Exception as e:
         logger.error(f"Auto-join request failed for {user_id}: {e}")
-        return False, list(AUTO_JOIN_ROOMS)
+        return False, list(room_aliases)
 
     return len(failed_rooms) == 0, failed_rooms
 

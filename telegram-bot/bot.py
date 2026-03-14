@@ -65,6 +65,7 @@ GRIST_CACHE_FULL_SYNC_INTERVAL = 600  # seconds
 grist_sql_available = True
 grist_cache_lock = asyncio.Lock()
 grist_handle_to_record_id = {}
+grist_handle_to_person_name = {}
 grist_max_record_id = 0
 grist_last_full_sync = 0.0
 
@@ -106,7 +107,7 @@ def build_grist_sql_query(min_record_id: int = 0) -> str:
     statuses = ", ".join(f"'{status}'" for status in GRIST_ALLOWED_STATUS_CODES)
     min_id_clause = f"AND id > {min_record_id}" if min_record_id > 0 else ""
     return (
-        "SELECT id, Telegram2 "
+        "SELECT id, Telegram2, person_name "
         f"FROM {GRIST_TABLE_ID} "
         "WHERE year = 2026 "
         f"AND status_code IN ({statuses}) "
@@ -214,6 +215,7 @@ async def sync_grist_cache(force_full: bool = False) -> bool:
 
         if do_full_sync or not incremental_used:
             grist_handle_to_record_id.clear()
+            grist_handle_to_person_name.clear()
             grist_max_record_id = 0
 
         for record in records:
@@ -224,6 +226,7 @@ async def sync_grist_cache(force_full: bool = False) -> bool:
             telegram2 = fields.get("Telegram2")
             if not telegram2:
                 continue
+            person_name = fields.get("person_name")
 
             try:
                 record_id = int(record_id)
@@ -235,6 +238,10 @@ async def sync_grist_cache(force_full: bool = False) -> bool:
                 continue
 
             grist_handle_to_record_id[normalized] = record_id
+            if isinstance(person_name, str) and person_name.strip():
+                grist_handle_to_person_name[normalized] = person_name.strip()
+            else:
+                grist_handle_to_person_name.pop(normalized, None)
             if record_id > grist_max_record_id:
                 grist_max_record_id = record_id
 
@@ -321,7 +328,7 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("Проверяю вашу благонадежность...")
         
         # Check if user is in the Grist list
-        is_eligible, eligibility_check_ok = await check_user_eligibility(username)
+        is_eligible, eligibility_check_ok, person_name = await check_user_eligibility(username)
 
         if not eligibility_check_ok:
             await update.message.reply_text(
@@ -340,6 +347,11 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         success, registration_error_code = await register_synapse_user(username, temp_password)
         
         if success:
+            if person_name:
+                displayname_ok = await set_synapse_display_name(username, person_name)
+                if not displayname_ok:
+                    logger.warning(f"Could not set display name for {username} to '{person_name}'")
+
             join_ok, failed_rooms = await join_user_to_default_rooms(username)
             escaped_username = escape_markdown(username, version=1)
             escaped_password = escape_markdown(temp_password, version=1)
@@ -433,12 +445,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
 
 
-async def check_user_eligibility(telegram_handle: str) -> tuple[bool, bool]:
-    """Return (is_eligible, check_ok) using in-memory Grist cache."""
+async def check_user_eligibility(telegram_handle: str) -> tuple[bool, bool, str | None]:
+    """Return (is_eligible, check_ok, person_name) using in-memory Grist cache."""
     try:
         if not telegram_handle:
             logger.warning("Empty telegram handle provided")
-            return False, True
+            return False, True, None
 
         handle = normalize_telegram_handle(telegram_handle)
 
@@ -447,7 +459,7 @@ async def check_user_eligibility(telegram_handle: str) -> tuple[bool, bool]:
             logger.info(
                 f"User {handle} found in Grist cache (record_id={grist_handle_to_record_id[handle]})"
             )
-            return True, True
+            return True, True, grist_handle_to_person_name.get(handle)
 
         # Cache miss: try syncing once, then re-check.
         sync_ok = await sync_grist_cache(force_full=False)
@@ -455,20 +467,20 @@ async def check_user_eligibility(telegram_handle: str) -> tuple[bool, bool]:
         # If Grist is temporarily unavailable, keep serving from stale cache.
         if not sync_ok and not grist_handle_to_record_id:
             logger.warning("Grist cache unavailable and empty")
-            return False, False
+            return False, False, None
 
         if handle in grist_handle_to_record_id:
             logger.info(
                 f"User {handle} found in Grist cache after sync (record_id={grist_handle_to_record_id[handle]})"
             )
-            return True, True
+            return True, True, grist_handle_to_person_name.get(handle)
 
         logger.warning(f"User {handle} not found in Grist cache")
-        return False, True
+        return False, True, None
             
     except Exception as e:
         logger.error(f"Error checking eligibility for {telegram_handle}: {e}")
-        return False, False
+        return False, False, None
 
 
 async def register_synapse_user(username: str, password: str) -> tuple[bool, str | None]:
@@ -537,6 +549,47 @@ async def register_synapse_user(username: str, password: str) -> tuple[bool, str
     except Exception as e:
         logger.error(f"Error registering user {username}: {e}")
         return False, "REGISTER_EXCEPTION"
+
+
+async def set_synapse_display_name(username: str, display_name: str) -> bool:
+    """Set display name for a user via Synapse Admin API."""
+    if not display_name:
+        return True
+
+    if not SYNAPSE_ADMIN_ACCESS_TOKEN:
+        logger.warning("SYNAPSE_ADMIN_ACCESS_TOKEN is not set; skipping display name update")
+        return False
+
+    user_id = quote(to_mxid(username), safe='')
+    headers = {
+        "Authorization": f"Bearer {SYNAPSE_ADMIN_ACCESS_TOKEN}",
+        "Content-Type": "application/json",
+    }
+
+    payload = {
+        "displayname": display_name,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+            response = await request_with_retries(
+                client,
+                "PUT",
+                f"{SYNAPSE_API_URL}/_synapse/admin/v2/users/{user_id}",
+                headers=headers,
+                json=payload,
+            )
+
+        if response.status_code not in (200, 201):
+            logger.warning(
+                f"Failed to set display name for {username}: {response.status_code} {response.text}"
+            )
+            return False
+
+        return True
+    except Exception as e:
+        logger.warning(f"Error while setting display name for {username}: {e}")
+        return False
 
 
 def to_mxid(localpart: str) -> str:

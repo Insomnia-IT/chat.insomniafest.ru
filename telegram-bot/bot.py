@@ -6,6 +6,7 @@ import hmac
 import hashlib
 import secrets
 import time
+from urllib.parse import quote
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.helpers import escape_markdown
@@ -21,9 +22,15 @@ logger = logging.getLogger(__name__)
 # Configuration
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 SYNAPSE_ADMIN_TOKEN = os.getenv('SYNAPSE_REGISTRATION_SHARED_SECRET')
+SYNAPSE_ADMIN_ACCESS_TOKEN = os.getenv('SYNAPSE_ADMIN_ACCESS_TOKEN')
 SYNAPSE_API_URL = "https://synapse.insomniafest.ru"
+SYNAPSE_SERVER_NAME = os.getenv('SYNAPSE_SERVER_NAME', 'insomniafest.ru')
 ELEMENT_URL = "https://chat.insomniafest.ru"
 HELP_URL = "https://chat.insomniafest.ru/help"
+AUTO_JOIN_ROOMS = (
+    '#announcements:insomniafest.ru',
+    '#general:insomniafest.ru',
+)
 GRIST_DOC_ID = "mhwDM83vLmT3"
 GRIST_TABLE_ID = "Participations"
 
@@ -333,6 +340,7 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         success, registration_error_code = await register_synapse_user(username, temp_password)
         
         if success:
+            join_ok, failed_rooms = await join_user_to_default_rooms(username)
             escaped_username = escape_markdown(username, version=1)
             escaped_password = escape_markdown(temp_password, version=1)
             message = f"""✅ Поздравляем!
@@ -346,6 +354,22 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 📖 **Помощь:** {HELP_URL}
             """
             await update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
+
+            if not join_ok and failed_rooms:
+                await update.message.reply_text(
+                    "⚠️ Аккаунт создан, но не удалось автоматически добавить вас в комнаты: "
+                    f"{', '.join(failed_rooms)}.\n"
+                    "Попросите администраторов отправить вам инвайт в эти комнаты."
+                )
+
+                await notify_owner(
+                    context,
+                    (
+                        "⚠️ Автодобавление в комнаты не удалось\n"
+                        f"username={username}\n"
+                        f"failed_rooms={', '.join(failed_rooms)}"
+                    ),
+                )
         elif registration_error_code == "M_USER_IN_USE":
             await update.message.reply_text(
                 f"""⚠️ Похоже, учетная запись "{username}" уже существует.
@@ -513,6 +537,53 @@ async def register_synapse_user(username: str, password: str) -> tuple[bool, str
     except Exception as e:
         logger.error(f"Error registering user {username}: {e}")
         return False, "REGISTER_EXCEPTION"
+
+
+def to_mxid(localpart: str) -> str:
+    """Build full MXID from a localpart."""
+    return f"@{localpart}:{SYNAPSE_SERVER_NAME}"
+
+
+async def join_user_to_default_rooms(username: str) -> tuple[bool, list[str]]:
+    """Join a local user to default rooms using Synapse Admin API."""
+    if not AUTO_JOIN_ROOMS:
+        return True, []
+
+    if not SYNAPSE_ADMIN_ACCESS_TOKEN:
+        logger.warning("SYNAPSE_ADMIN_ACCESS_TOKEN is not set; skipping auto-join to default rooms")
+        return False, list(AUTO_JOIN_ROOMS)
+
+    user_id = to_mxid(username)
+    headers = {
+        "Authorization": f"Bearer {SYNAPSE_ADMIN_ACCESS_TOKEN}",
+        "Content-Type": "application/json",
+    }
+
+    failed_rooms = []
+
+    try:
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+            for room in AUTO_JOIN_ROOMS:
+                room_id_or_alias = quote(room, safe='')
+                response = await request_with_retries(
+                    client,
+                    "POST",
+                    f"{SYNAPSE_API_URL}/_synapse/admin/v1/join/{room_id_or_alias}",
+                    headers=headers,
+                    json={"user_id": user_id},
+                )
+
+                if response.status_code not in (200, 201):
+                    failed_rooms.append(room)
+                    logger.warning(
+                        f"Failed to auto-join {user_id} to {room}: {response.status_code} {response.text}"
+                    )
+
+    except Exception as e:
+        logger.error(f"Auto-join request failed for {user_id}: {e}")
+        return False, list(AUTO_JOIN_ROOMS)
+
+    return len(failed_rooms) == 0, failed_rooms
 
 
 def main() -> None:

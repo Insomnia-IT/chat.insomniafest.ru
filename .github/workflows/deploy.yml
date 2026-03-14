@@ -50,6 +50,8 @@ jobs:
           LIVEKIT_API_SECRET=${{ secrets.LIVEKIT_API_SECRET }}
           TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}
           GRIST_API_KEY=${{ secrets.GRIST_API_KEY }}
+          OWNER_TELEGRAM_ID=${{ secrets.OWNER_TELEGRAM_ID }}
+          SYNAPSE_ADMIN_ACCESS_TOKEN=${{ secrets.SYNAPSE_ADMIN_ACCESS_TOKEN }}
         ENV
 
           chmod 600 .env

@@ -27,7 +27,6 @@ SYNAPSE_API_URL = "https://synapse.insomniafest.ru"
 SYNAPSE_SERVER_NAME = os.getenv('SYNAPSE_SERVER_NAME', 'insomniafest.ru')
 ELEMENT_URL = "https://chat.insomniafest.ru"
 HELP_URL = "https://chat.insomniafest.ru/help"
-ADMIN_URL = "https://chat.insomniafest.ru/admin/"
 AUTO_JOIN_ROOMS = (
     '#announcements:insomniafest.ru',
     '#general:insomniafest.ru',
@@ -287,11 +286,10 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         
         # Register user in Synapse
         temp_password = secrets.token_urlsafe(12)
-        is_synapse_admin = grist_role in (1, 2)
+        is_organizer = grist_role in (1, 2)
         success, registration_error_code = await register_synapse_user(
             username,
             temp_password,
-            is_admin=is_synapse_admin,
         )
         
         if success:
@@ -301,25 +299,19 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                     logger.warning(f"Could not set display name for {username} to '{person_name}'")
 
             room_aliases = list(AUTO_JOIN_ROOMS)
-            if is_synapse_admin:
+            if is_organizer:
                 room_aliases.append(ORGS_ROOM)
 
             join_ok, failed_rooms = await join_user_to_rooms(username, room_aliases)
             escaped_username = escape_markdown(username, version=1)
             escaped_password = escape_markdown(temp_password, version=1)
-            admin_message = ""
-            if is_synapse_admin:
-                admin_message = (
-                    "\nТак вы еще и организатор? Мое почтение! В таком случае у вас будет доступ еще и"
-                    f"к интерфейсу администрирования: {ADMIN_URL}. (Для входа нужно будет указать {SYNAPSE_API_URL} в качестве домашнего сервера)\n"
-                )
             message = f"""✅ Поздравляем!
 
 Вы можете войти в чат для волонтеров, используя следующие учетные данные:
 
 **Имя пользователя:** {escaped_username}
 **Временный пароль:** {escaped_password} (поменяйте его при первом входе)
-{admin_message}
+
 🔗 **Ссылка на чат:** {ELEMENT_URL}
 📖 **Помощь:** {HELP_URL}
             """
@@ -441,7 +433,7 @@ async def check_user_eligibility(telegram_handle: str) -> tuple[bool, bool, str 
         return False, False, None, None
 
 
-async def register_synapse_user(username: str, password: str, is_admin: bool = False) -> tuple[bool, str | None]:
+async def register_synapse_user(username: str, password: str) -> tuple[bool, str | None]:
     """Register a user in Synapse using the shared secret method."""
     try:
         async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
@@ -464,7 +456,7 @@ async def register_synapse_user(username: str, password: str, is_admin: bool = F
                 return False, "NONCE_MISSING"
             
             # Step 2: Compute HMAC-SHA1
-            admin_flag = "admin" if is_admin else "notadmin"
+            admin_flag = "notadmin"
             msg = "\x00".join([nonce, username, password, admin_flag]).encode("utf-8")
             secret_bytes = SYNAPSE_ADMIN_TOKEN.encode("utf-8")
             mac = hmac.new(secret_bytes, msg, hashlib.sha1).hexdigest()
@@ -474,7 +466,7 @@ async def register_synapse_user(username: str, password: str, is_admin: bool = F
                 "nonce": nonce,
                 "username": username,
                 "password": password,
-                "admin": is_admin,
+                "admin": False,
                 "mac": mac
             }
             

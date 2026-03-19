@@ -697,13 +697,16 @@ def test_create_team_room_retry_success(monkeypatch):
 
     responses = [
         FakeResponse(409, {}, text="alias exists"),
-        FakeResponse(200, {"room_id": "!new:insomniafest.ru"}),
     ]
 
     async def fake_request_with_retries(client, method, url, **kwargs):
         return responses.pop(0)
 
+    async def fake_resolve_room_alias(alias):
+        return "!new:insomniafest.ru"
+
     monkeypatch.setattr(bot, "request_with_retries", fake_request_with_retries)
+    monkeypatch.setattr(bot, "resolve_room_alias", fake_resolve_room_alias)
 
     room_id = asyncio.run(bot.create_team_room(72, "Точка сборки"))
     assert room_id == "!new:insomniafest.ru"

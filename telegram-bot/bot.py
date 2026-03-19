@@ -1063,46 +1063,6 @@ async def resolve_room_alias(alias: str) -> str | None:
         return None
 
 
-async def find_room_id_by_name(team_name: str) -> str | None:
-    """Find room id by exact room name."""
-    if not SYNAPSE_ADMIN_ACCESS_TOKEN:
-        return None
-
-    headers = {
-        "Authorization": f"Bearer {SYNAPSE_ADMIN_ACCESS_TOKEN}",
-    }
-    params = {
-        "search_term": team_name,
-    }
-
-    try:
-        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
-            response = await request_with_retries(
-                client,
-                "GET",
-                f"{SYNAPSE_API_URL}/_synapse/admin/v1/rooms",
-                headers=headers,
-                params=params,
-            )
-
-        if response.status_code != 200:
-            logger.warning(
-                f"Could not search room by name '{team_name}': {response.status_code} {response.text}"
-            )
-            return None
-
-        normalized_target = team_name.strip().lower()
-        for room in response.json().get("rooms", []):
-            room_name = (room.get("name") or "").strip().lower()
-            room_id = room.get("room_id")
-            if room_name == normalized_target and room_id:
-                return room_id
-    except Exception as e:
-        logger.warning(f"Could not search room by name '{team_name}': {e}")
-
-    return None
-
-
 async def create_team_room(team_id: int, team_name: str) -> str | None:
     """Create a private team room and return room id."""
     if not SYNAPSE_ADMIN_ACCESS_TOKEN:
@@ -1133,25 +1093,15 @@ async def create_team_room(team_id: int, team_name: str) -> str | None:
             if response.status_code == 200:
                 return response.json().get("room_id")
 
-            retry_payload = {
-                "preset": "private_chat",
-                "name": team_name,
-                "topic": f"Команда: {team_name}",
-            }
-            retry_response = await request_with_retries(
-                client,
-                "POST",
-                f"{SYNAPSE_API_URL}/_matrix/client/v3/createRoom",
-                headers=headers,
-                json=retry_payload,
-            )
-
-        if retry_response.status_code == 200:
-            return retry_response.json().get("room_id")
+        # Race-safe fallback: room may have been created by another request with the same alias.
+        alias = build_team_room_alias(team_id)
+        room_id = await resolve_room_alias(alias)
+        if room_id:
+            return room_id
 
         logger.warning(
             f"Could not create room for team '{team_name}': "
-            f"{retry_response.status_code} {retry_response.text}"
+            f"{response.status_code} {response.text}"
         )
         return None
     except Exception as e:
@@ -1163,10 +1113,6 @@ async def ensure_team_room(team_id: int, team_name: str) -> str | None:
     """Ensure team room exists and return room id."""
     alias = build_team_room_alias(team_id)
     room_id = await resolve_room_alias(alias)
-    if room_id:
-        return room_id
-
-    room_id = await find_room_id_by_name(team_name)
     if room_id:
         return room_id
 

@@ -9,3 +9,5 @@ data/postgres/*
 config/synapse/homeserver.yaml
 *.key
 .pytest_cache/
+telegram-bot/.coverage
+*.log

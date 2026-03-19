@@ -41,6 +41,7 @@ TEAM_ROOM_MODERATOR_LEVEL = 50
 
 GRIST_API_KEY = os.getenv('GRIST_API_KEY')
 OWNER_TELEGRAM_ID_RAW = os.getenv('OWNER_TELEGRAM_ID')
+ADMIN_TELEGRAM_IDS_RAW = os.getenv('ADMIN_TELEGRAM_IDS', '')
 
 if not TELEGRAM_BOT_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN environment variable not set")
@@ -55,6 +56,20 @@ if OWNER_TELEGRAM_ID_RAW:
         OWNER_TELEGRAM_ID = int(OWNER_TELEGRAM_ID_RAW)
     except ValueError:
         logger.error("OWNER_TELEGRAM_ID must be a valid integer Telegram chat ID")
+
+ADMIN_TELEGRAM_IDS = set()
+if OWNER_TELEGRAM_ID is not None:
+    ADMIN_TELEGRAM_IDS.add(OWNER_TELEGRAM_ID)
+
+if ADMIN_TELEGRAM_IDS_RAW:
+    for raw_id in ADMIN_TELEGRAM_IDS_RAW.split(','):
+        raw_id = raw_id.strip()
+        if not raw_id:
+            continue
+        try:
+            ADMIN_TELEGRAM_IDS.add(int(raw_id))
+        except ValueError:
+            logger.error(f"Invalid ADMIN_TELEGRAM_IDS value skipped: {raw_id}")
 
 # Rate limiting: track last registration attempt per user (user_id -> timestamp)
 REGISTRATION_RATE_LIMIT = 300  # 5 minutes in seconds
@@ -515,6 +530,128 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
 
 
+def is_admin_telegram_user(update: Update) -> bool:
+    """Check whether Telegram user is allowed to run hidden ops commands."""
+    if not update or not update.effective_user:
+        return False
+    return update.effective_user.id in ADMIN_TELEGRAM_IDS
+
+
+async def require_admin(update: Update) -> bool:
+    """Return True for admin users, otherwise send denial message."""
+    if is_admin_telegram_user(update):
+        return True
+
+    await update.message.reply_text("❌ Эта команда недоступна.")
+    return False
+
+
+async def ops_sync(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Force Grist cache sync and report counters. Hidden admin-only command."""
+    if not await require_admin(update):
+        return
+
+    ok = await sync_grist_cache(force_full=True)
+    if not ok:
+        await update.message.reply_text("❌ Sync failed")
+        return
+
+    await update.message.reply_text(
+        (
+            "✅ Sync complete\n"
+            f"users={len(grist_handle_to_record_id)}\n"
+            f"teams={len(grist_team_id_to_name)}\n"
+            f"max_record_id={grist_max_record_id}"
+        )
+    )
+
+
+async def ops_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Check eligibility and team memberships for a Telegram handle. Hidden admin-only command."""
+    if not await require_admin(update):
+        return
+
+    if not context.args:
+        await update.message.reply_text("Usage: /ops_check <telegram_handle>")
+        return
+
+    handle = context.args[0]
+    eligible, check_ok, person_name, memberships = await check_user_eligibility(handle)
+
+    if not check_ok:
+        await update.message.reply_text("❌ Eligibility check failed")
+        return
+
+    if not eligible:
+        await update.message.reply_text(f"❌ Not eligible: {handle}")
+        return
+
+    lines = [
+        "✅ Eligible",
+        f"handle={normalize_telegram_handle(handle)}",
+        f"person_name={person_name or '-'}",
+    ]
+    if memberships:
+        for team_id, is_org in sorted(memberships.items()):
+            lines.append(
+                f"team={team_id} name={get_team_name(team_id)} organizer={str(is_org).lower()}"
+            )
+    else:
+        lines.append("team_memberships=none")
+
+    await update.message.reply_text("\n".join(lines))
+
+
+async def ops_probe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Probe team rooms for eligible handle (resolve/create room ids). Hidden admin-only command."""
+    if not await require_admin(update):
+        return
+
+    if not context.args:
+        await update.message.reply_text("Usage: /ops_probe <telegram_handle>")
+        return
+
+    handle = context.args[0]
+    eligible, check_ok, person_name, memberships = await check_user_eligibility(handle)
+
+    if not check_ok:
+        await update.message.reply_text("❌ Eligibility check failed")
+        return
+
+    if not eligible:
+        await update.message.reply_text(f"❌ Not eligible: {handle}")
+        return
+
+    if not memberships:
+        await update.message.reply_text("⚠️ Eligible, but no team memberships found")
+        return
+
+    lines = [
+        "🧪 Team room probe",
+        f"handle={normalize_telegram_handle(handle)}",
+        f"person_name={person_name or '-'}",
+    ]
+
+    failed = []
+    for team_id, is_org in sorted(memberships.items()):
+        team_name = get_team_name(team_id)
+        room_id = await ensure_team_room(team_id, team_name)
+        if room_id:
+            lines.append(
+                f"ok team={team_id} name={team_name} room_id={room_id} organizer={str(is_org).lower()}"
+            )
+        else:
+            failed.append(team_name)
+            lines.append(
+                f"fail team={team_id} name={team_name} organizer={str(is_org).lower()}"
+            )
+
+    if failed:
+        lines.append(f"failed={', '.join(failed)}")
+
+    await update.message.reply_text("\n".join(lines))
+
+
 async def check_user_eligibility(telegram_handle: str) -> tuple[bool, bool, str | None, dict[int, bool]]:
     """Return (is_eligible, check_ok, person_name, team_memberships) using in-memory Grist cache."""
     try:
@@ -952,6 +1089,9 @@ def main() -> None:
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("register", register))
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("ops_sync", ops_sync))
+    application.add_handler(CommandHandler("ops_check", ops_check))
+    application.add_handler(CommandHandler("ops_probe", ops_probe))
     application.add_error_handler(error_handler)
 
     # Run the bot

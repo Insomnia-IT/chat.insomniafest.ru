@@ -54,9 +54,10 @@ class DummyBot:
 
 
 class DummyContext:
-    def __init__(self, error=None):
+    def __init__(self, error=None, args=None):
         self.bot = DummyBot()
         self.error = error
+        self.args = args if args is not None else []
 
 
 def load_bot_module(monkeypatch):
@@ -206,6 +207,107 @@ def test_sync_grist_cache_builds_team_memberships_and_teams(monkeypatch):
     assert bot.grist_team_id_to_name == {72: "Точка сборки", 73: "Лес"}
     assert bot.grist_handle_to_team_memberships["alice"] == {72: True, 73: False}
     assert bot.grist_handle_to_team_memberships["bob"] == {72: False}
+
+
+def test_require_admin_denies_non_admin(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.ADMIN_TELEGRAM_IDS.clear()
+    update = DummyUpdate(user_id=999, username="nope")
+
+    allowed = asyncio.run(bot.require_admin(update))
+
+    assert allowed is False
+    assert update.message.sent
+    assert "недоступна" in update.message.sent[0]["text"].lower()
+
+
+def test_ops_sync_admin_success(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.ADMIN_TELEGRAM_IDS.clear()
+    bot.ADMIN_TELEGRAM_IDS.add(1)
+
+    async def fake_sync_grist_cache(force_full=False):
+        assert force_full is True
+        bot.grist_handle_to_record_id.clear()
+        bot.grist_team_id_to_name.clear()
+        bot.grist_handle_to_record_id["alice"] = 1
+        bot.grist_team_id_to_name[2] = "GR"
+        bot.grist_max_record_id = 6178
+        return True
+
+    monkeypatch.setattr(bot, "sync_grist_cache", fake_sync_grist_cache)
+
+    update = DummyUpdate(user_id=1, username="admin")
+    context = DummyContext()
+
+    asyncio.run(bot.ops_sync(update, context))
+
+    assert update.message.sent
+    text = update.message.sent[0]["text"]
+    assert "Sync complete" in text
+    assert "users=1" in text
+    assert "teams=1" in text
+
+
+def test_ops_check_reports_memberships(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.ADMIN_TELEGRAM_IDS.clear()
+    bot.ADMIN_TELEGRAM_IDS.add(1)
+    bot.grist_team_id_to_name.clear()
+    bot.grist_team_id_to_name.update({2: "2026.GR(Организатор)"})
+
+    async def fake_check_user_eligibility(handle):
+        assert handle == "@anya_strezhneva"
+        return True, True, "Анна Стрежнева", {2: True}
+
+    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
+
+    update = DummyUpdate(user_id=1, username="admin")
+    context = DummyContext(args=["@anya_strezhneva"])
+
+    asyncio.run(bot.ops_check(update, context))
+
+    assert update.message.sent
+    text = update.message.sent[0]["text"]
+    assert "Eligible" in text
+    assert "Анна Стрежнева" in text
+    assert "team=2" in text
+    assert "organizer=true" in text
+
+
+def test_ops_probe_reports_room_results(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.ADMIN_TELEGRAM_IDS.clear()
+    bot.ADMIN_TELEGRAM_IDS.add(1)
+    bot.grist_team_id_to_name.clear()
+    bot.grist_team_id_to_name.update({1: "OneLab", 2: "GR"})
+
+    async def fake_check_user_eligibility(handle):
+        return True, True, "Анна", {1: False, 2: True}
+
+    async def fake_ensure_team_room(team_id, team_name):
+        if team_id == 1:
+            return "!room1:insomniafest.ru"
+        return None
+
+    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
+    monkeypatch.setattr(bot, "ensure_team_room", fake_ensure_team_room)
+
+    update = DummyUpdate(user_id=1, username="admin")
+    context = DummyContext(args=["@anya_strezhneva"])
+
+    asyncio.run(bot.ops_probe(update, context))
+
+    assert update.message.sent
+    text = update.message.sent[0]["text"]
+    assert "Team room probe" in text
+    assert "ok team=1" in text
+    assert "fail team=2" in text
+    assert "failed=GR" in text
 
 
 def test_sync_grist_cache_handles_real_grist_schema(monkeypatch):

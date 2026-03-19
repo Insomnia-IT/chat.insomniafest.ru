@@ -64,7 +64,6 @@ HTTP_RETRIES = 2
 # Grist eligibility cache
 GRIST_ALLOWED_STATUS_CODES = ("PLANNED", "STARTED", "COMPLETE")
 GRIST_CACHE_FULL_SYNC_INTERVAL = 600  # seconds
-grist_sql_available = True
 grist_cache_lock = asyncio.Lock()
 grist_handle_to_record_id = {}
 grist_handle_to_person_name = {}
@@ -105,49 +104,8 @@ def normalize_telegram_handle(handle: str) -> str:
     return handle.lstrip('@').strip().lower()
 
 
-def build_grist_sql_query(min_record_id: int = 0) -> str:
-    """Build SQL for selecting eligible volunteer handles from Grist."""
-    statuses = ", ".join(f"'{status}'" for status in GRIST_ALLOWED_STATUS_CODES)
-    min_id_clause = f"AND id > {min_record_id}" if min_record_id > 0 else ""
-    return (
-        "SELECT id, Telegram2, person_name, role "
-        f"FROM {GRIST_TABLE_ID} "
-        "WHERE year = 2026 "
-        f"AND status_code IN ({statuses}) "
-        "AND Telegram2 IS NOT NULL "
-        "AND Telegram2 != '' "
-        f"{min_id_clause} "
-        "ORDER BY id ASC"
-    )
-
-
-async def fetch_grist_records_sql(query: str) -> list:
-    """Run a read-only SQL query against Grist and return records list."""
-    url = f"https://grist.insomniafest.ru/api/docs/{GRIST_DOC_ID}/sql"
-    headers = {
-        "Authorization": f"Bearer {GRIST_API_KEY}",
-        "Content-Type": "application/json",
-    }
-    params = {"q": query}
-
-    async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
-        response = await request_with_retries(
-            client,
-            "GET",
-            url,
-            params=params,
-            headers=headers,
-        )
-
-    if response.status_code != 200:
-        raise RuntimeError(f"Grist SQL API error: {response.status_code} {response.text}")
-
-    data = response.json()
-    return data.get("records", [])
-
-
 async def fetch_grist_records_via_records_api() -> list:
-    """Fetch eligible records using Grist records API as a fallback."""
+    """Fetch eligible records using Grist records API."""
     url = f"https://grist.insomniafest.ru/api/docs/{GRIST_DOC_ID}/tables/{GRIST_TABLE_ID}/records"
     headers = {
         "Authorization": f"Bearer {GRIST_API_KEY}",
@@ -179,8 +137,8 @@ async def fetch_grist_records_via_records_api() -> list:
 
 
 async def sync_grist_cache(force_full: bool = False) -> bool:
-    """Sync eligibility cache from Grist (incremental by default)."""
-    global grist_max_record_id, grist_last_full_sync, grist_sql_available
+    """Sync eligibility cache from Grist records API."""
+    global grist_max_record_id, grist_last_full_sync
 
     async with grist_cache_lock:
         now = time.time()
@@ -190,37 +148,16 @@ async def sync_grist_cache(force_full: bool = False) -> bool:
             or (now - grist_last_full_sync) >= GRIST_CACHE_FULL_SYNC_INTERVAL
         )
 
-        min_record_id = 0 if do_full_sync else grist_max_record_id
-        records = []
-        incremental_used = False
+        try:
+            records = await fetch_grist_records_via_records_api()
+        except Exception as e:
+            logger.error(f"Failed to sync Grist cache via records API: {e}")
+            return False
 
-        if grist_sql_available:
-            query = build_grist_sql_query(min_record_id=min_record_id)
-            try:
-                records = await fetch_grist_records_sql(query)
-                incremental_used = True
-            except Exception as e:
-                err_text = str(e)
-                if "403" in err_text or "insufficient document access" in err_text.lower():
-                    grist_sql_available = False
-                    logger.warning("Grist SQL API is unavailable for this token, switching to records API fallback")
-                else:
-                    logger.error(f"Failed to sync Grist cache: {e}")
-                    return False
-
-        if not grist_sql_available:
-            try:
-                records = await fetch_grist_records_via_records_api()
-                incremental_used = False
-            except Exception as e:
-                logger.error(f"Failed to sync Grist cache via records API: {e}")
-                return False
-
-        if do_full_sync or not incremental_used:
-            grist_handle_to_record_id.clear()
-            grist_handle_to_person_name.clear()
-            grist_handle_to_role.clear()
-            grist_max_record_id = 0
+        grist_handle_to_record_id.clear()
+        grist_handle_to_person_name.clear()
+        grist_handle_to_role.clear()
+        grist_max_record_id = 0
 
         for record in records:
             fields = record.get("fields", {})
@@ -254,15 +191,10 @@ async def sync_grist_cache(force_full: bool = False) -> bool:
             if record_id > grist_max_record_id:
                 grist_max_record_id = record_id
 
-        if do_full_sync or not incremental_used:
-            grist_last_full_sync = now
-            logger.info(
-                f"Grist full sync complete: {len(grist_handle_to_record_id)} handles, max_id={grist_max_record_id}"
-            )
-        else:
-            logger.info(
-                f"Grist incremental sync complete: +{len(records)} rows, max_id={grist_max_record_id}"
-            )
+        grist_last_full_sync = now
+        logger.info(
+            f"Grist sync complete: {len(grist_handle_to_record_id)} handles, max_id={grist_max_record_id}"
+        )
 
         return True
 
@@ -379,7 +311,7 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             if is_synapse_admin:
                 admin_message = (
                     "\nТак вы еще и организатор? Мое почтение! В таком случае у вас будет доступ еще и"
-                    f"к интерфейсу администрирования: {ADMIN_URL}\n"
+                    f"к интерфейсу администрирования: {ADMIN_URL}. (Для входа нужно будет указать {SYNAPSE_API_URL} в качестве домашнего сервера)\n"
                 )
             message = f"""✅ Поздравляем!
 

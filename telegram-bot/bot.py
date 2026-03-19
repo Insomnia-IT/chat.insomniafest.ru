@@ -33,6 +33,10 @@ AUTO_JOIN_ROOMS = (
     '#announcements:insomniafest.ru',
     '#general:insomniafest.ru',
 )
+FAKE_TEST_ROOM_ALIASES = (
+    '#fake-1:insomniafest.ru',
+    '#fake-2:insomniafest.ru',
+)
 ORGS_ROOM = '#orgs:insomniafest.ru'
 GRIST_DOC_ID = "mhwDM83vLmT3"
 GRIST_TABLE_ID = "Participations"
@@ -527,6 +531,18 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 Если возникнут вопросы или проблемы, напишите администраторам.
     """
+
+    if is_admin_telegram_user(update):
+        message += """
+
+🔐 **Команды владельца (скрытые)**
+
+/ops_sync - принудительно обновить кэш Grist и показать счетчики.
+/ops_check @handle - проверить eligibility и членство по командам.
+/ops_probe @handle - проверить/создать командные комнаты и показать результат.
+/ops_fake_register fake-1 [#fake-1 #fake-2] - создать тестового Matrix-пользователя и проверить автодобавление в комнаты.
+        """
+
     await update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
 
 
@@ -648,6 +664,90 @@ async def ops_probe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     if failed:
         lines.append(f"failed={', '.join(failed)}")
+
+    await update.message.reply_text("\n".join(lines))
+
+
+def normalize_room_alias(alias: str) -> str:
+    """Normalize room alias and append server name when domain is omitted."""
+    value = (alias or "").strip()
+    if not value:
+        return value
+
+    if not value.startswith('#'):
+        value = f"#{value}"
+
+    if ':' not in value:
+        value = f"{value}:{SYNAPSE_SERVER_NAME}"
+
+    return value
+
+
+def sanitize_fake_localpart(raw_value: str) -> str:
+    """Sanitize user-provided localpart for fake registration command."""
+    value = (raw_value or "").strip()
+    if value.startswith('@'):
+        value = value[1:]
+    if ':' in value:
+        value = value.split(':', 1)[0]
+    return value
+
+
+async def ops_fake_register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Create/join a fake Matrix user to test rooms. Hidden admin-only command."""
+    if not await require_admin(update):
+        return
+
+    if not context.args:
+        await update.message.reply_text(
+            "Usage: /ops_fake_register <fake-localpart> [#room1 #room2 ...]"
+        )
+        return
+
+    localpart = sanitize_fake_localpart(context.args[0]).lower()
+    if not localpart:
+        await update.message.reply_text("❌ Empty localpart")
+        return
+
+    if not localpart.startswith('fake-'):
+        await update.message.reply_text("❌ For safety, localpart must start with 'fake-'")
+        return
+
+    requested_rooms = context.args[1:] if len(context.args) > 1 else []
+    if requested_rooms:
+        rooms = [normalize_room_alias(room) for room in requested_rooms if normalize_room_alias(room)]
+    else:
+        rooms = list(FAKE_TEST_ROOM_ALIASES)
+
+    if not rooms:
+        await update.message.reply_text("❌ No valid room aliases provided")
+        return
+
+    temp_password = secrets.token_urlsafe(12)
+    register_ok, registration_error = await register_synapse_user(localpart, temp_password)
+
+    created = register_ok
+    if not register_ok and registration_error != "M_USER_IN_USE":
+        await update.message.reply_text(
+            f"❌ Registration failed for {localpart}: {registration_error}"
+        )
+        return
+
+    join_ok, failed_rooms = await join_user_to_rooms(localpart, rooms)
+
+    lines = [
+        "🧪 Fake registration smoke test",
+        f"mxid={to_mxid(localpart)}",
+        f"created={str(created).lower()}",
+        f"rooms={', '.join(rooms)}",
+        f"join_ok={str(join_ok).lower()}",
+    ]
+
+    if created:
+        lines.append(f"temp_password={temp_password}")
+
+    if failed_rooms:
+        lines.append(f"failed_rooms={', '.join(failed_rooms)}")
 
     await update.message.reply_text("\n".join(lines))
 
@@ -1092,6 +1192,7 @@ def main() -> None:
     application.add_handler(CommandHandler("ops_sync", ops_sync))
     application.add_handler(CommandHandler("ops_check", ops_check))
     application.add_handler(CommandHandler("ops_probe", ops_probe))
+    application.add_handler(CommandHandler("ops_fake_register", ops_fake_register))
     application.add_error_handler(error_handler)
 
     # Run the bot

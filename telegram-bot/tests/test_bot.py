@@ -928,6 +928,51 @@ def test_register_success_happy_path(monkeypatch):
     assert update.message.sent[1]["parse_mode"] == bot.ParseMode.MARKDOWN
 
 
+def test_register_normalizes_mixed_case_username(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    update = DummyUpdate(user_id=42, username="CaseMix_123")
+    context = DummyContext()
+
+    bot.user_registration_times.clear()
+    captured = {}
+
+    async def fake_check_user_eligibility(username):
+        captured["eligibility"] = username
+        return True, True, "Alice", {72: False}
+
+    async def fake_register_synapse_user(username, password):
+        captured["register"] = username
+        return True, None
+
+    async def fake_set_synapse_display_name(username, display_name):
+        captured["displayname"] = username
+        return True
+
+    async def fake_join_user_to_rooms(username, room_aliases):
+        captured["join_rooms"] = username
+        return True, []
+
+    async def fake_join_user_to_team_rooms(username, memberships):
+        captured["join_team_rooms"] = username
+        return True, [], []
+
+    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
+    monkeypatch.setattr(bot, "register_synapse_user", fake_register_synapse_user)
+    monkeypatch.setattr(bot, "set_synapse_display_name", fake_set_synapse_display_name)
+    monkeypatch.setattr(bot, "join_user_to_rooms", fake_join_user_to_rooms)
+    monkeypatch.setattr(bot, "join_user_to_team_rooms", fake_join_user_to_team_rooms)
+
+    asyncio.run(bot.register(update, context))
+
+    assert captured == {
+        "eligibility": "casemix_123",
+        "register": "casemix_123",
+        "displayname": "casemix_123",
+        "join_rooms": "casemix_123",
+        "join_team_rooms": "casemix_123",
+    }
+
+
 def test_register_success_with_join_failures(monkeypatch):
     bot = load_bot_module(monkeypatch)
     update = DummyUpdate(user_id=42, username="alice")

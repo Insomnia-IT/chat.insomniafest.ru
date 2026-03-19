@@ -354,7 +354,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle registration request."""
     user_id = update.effective_user.id
-    username = update.effective_user.username or str(user_id)
+    username = normalize_telegram_handle(update.effective_user.username) or str(user_id)
     
     # Rate limiting check
     now = time.time()

@@ -524,26 +524,23 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send help information."""
-    message = f"""
-📖 **Помощь и документация**
-
-Перейдите на страницу помощи: {HELP_URL}
-
-Если возникнут вопросы или проблемы, напишите администраторам.
-    """
+    message = (
+        "📖 Помощь и документация\n\n"
+        f"Перейдите на страницу помощи: {HELP_URL}\n\n"
+        "Если возникнут вопросы или проблемы, напишите администраторам."
+    )
 
     if is_admin_telegram_user(update):
-        message += """
+        message += (
+            "\n\n"
+            "🔐 Команды админов (скрытые)\n\n"
+            "/ops_sync - принудительно обновить кэш Grist и показать счетчики.\n"
+            "/ops_check @handle - проверить eligibility и членство по командам.\n"
+            "/ops_register @handle - выполнить полную регистрацию: Matrix-аккаунт, автодобавление в комнаты и командные комнаты.\n"
+            "/ops_fake_register fake-1 [#fake-1 #fake-2] - создать тестового Matrix-пользователя и проверить автодобавление в комнаты."
+        )
 
-🔐 **Команды владельца (скрытые)**
-
-/ops_sync - принудительно обновить кэш Grist и показать счетчики.
-/ops_check @handle - проверить eligibility и членство по командам.
-/ops_probe @handle - проверить/создать командные комнаты и показать результат.
-/ops_fake_register fake-1 [#fake-1 #fake-2] - создать тестового Matrix-пользователя и проверить автодобавление в комнаты.
-        """
-
-    await update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
+    await update.message.reply_text(message)
 
 
 def is_admin_telegram_user(update: Update) -> bool:
@@ -618,13 +615,13 @@ async def ops_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("\n".join(lines))
 
 
-async def ops_probe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Probe team rooms for eligible handle (resolve/create room ids). Hidden admin-only command."""
+async def ops_register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Run full registration flow for a provided handle. Hidden admin-only command."""
     if not await require_admin(update):
         return
 
     if not context.args:
-        await update.message.reply_text("Usage: /ops_probe <telegram_handle>")
+        await update.message.reply_text("Usage: /ops_register <telegram_handle>")
         return
 
     handle = context.args[0]
@@ -638,32 +635,55 @@ async def ops_probe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(f"❌ Not eligible: {handle}")
         return
 
-    if not memberships:
-        await update.message.reply_text("⚠️ Eligible, but no team memberships found")
+    username = normalize_telegram_handle(handle)
+    temp_password = secrets.token_urlsafe(12)
+    is_organizer = any(memberships.values())
+
+    register_ok, registration_error = await register_synapse_user(username, temp_password)
+
+    created = register_ok
+    if not register_ok and registration_error != "M_USER_IN_USE":
+        await update.message.reply_text(
+            f"❌ Registration failed for {username}: {registration_error}"
+        )
         return
 
+    displayname_ok = True
+    if person_name:
+        displayname_ok = await set_synapse_display_name(username, person_name)
+
+    room_aliases = list(AUTO_JOIN_ROOMS)
+    if is_organizer:
+        room_aliases.append(ORGS_ROOM)
+
+    join_ok, failed_rooms = await join_user_to_rooms(username, room_aliases)
+    team_join_ok, failed_team_rooms, failed_moderation_rooms = await join_user_to_team_rooms(
+        username,
+        memberships,
+    )
+
     lines = [
-        "🧪 Team room probe",
-        f"handle={normalize_telegram_handle(handle)}",
+        "🧪 Admin full registration",
+        f"handle={username}",
+        f"mxid={to_mxid(username)}",
         f"person_name={person_name or '-'}",
+        f"created={str(created).lower()}",
+        f"displayname_updated={str(displayname_ok).lower()}",
+        f"default_join_ok={str(join_ok).lower()}",
+        f"team_join_ok={str(team_join_ok).lower()}",
     ]
 
-    failed = []
-    for team_id, is_org in sorted(memberships.items()):
-        team_name = get_team_name(team_id)
-        room_id = await ensure_team_room(team_id, team_name)
-        if room_id:
-            lines.append(
-                f"ok team={team_id} name={team_name} room_id={room_id} organizer={str(is_org).lower()}"
-            )
-        else:
-            failed.append(team_name)
-            lines.append(
-                f"fail team={team_id} name={team_name} organizer={str(is_org).lower()}"
-            )
+    if created:
+        lines.append(f"temp_password={temp_password}")
 
-    if failed:
-        lines.append(f"failed={', '.join(failed)}")
+    if failed_rooms:
+        lines.append(f"failed_rooms={', '.join(failed_rooms)}")
+
+    if failed_team_rooms:
+        lines.append(f"failed_team_rooms={', '.join(failed_team_rooms)}")
+
+    if failed_moderation_rooms:
+        lines.append(f"failed_moderation_rooms={', '.join(failed_moderation_rooms)}")
 
     await update.message.reply_text("\n".join(lines))
 
@@ -1191,7 +1211,7 @@ def main() -> None:
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("ops_sync", ops_sync))
     application.add_handler(CommandHandler("ops_check", ops_check))
-    application.add_handler(CommandHandler("ops_probe", ops_probe))
+    application.add_handler(CommandHandler("ops_register", ops_register))
     application.add_handler(CommandHandler("ops_fake_register", ops_fake_register))
     application.add_error_handler(error_handler)
 

@@ -56,7 +56,7 @@ def test_fetch_grist_records_contract(monkeypatch):
                     {
                         "id": 6178,
                         "fields": {
-                            "Telegram2": "@anya_strezhneva",
+                            "Telegram2": "@test_member",
                             "team": 2,
                             "role_code": "ORGANIZER",
                         },
@@ -93,12 +93,12 @@ def test_register_synapse_user_http_flow(monkeypatch):
 
         if request.method == "POST" and request.url.path.endswith("/_synapse/admin/v1/register"):
             payload = json.loads(request.content.decode("utf-8"))
-            assert payload["username"] == "alice"
+            assert payload["username"] == "test_user"
             assert payload["password"] == "p@ss"
             assert payload["admin"] is False
             assert isinstance(payload["mac"], str)
             assert len(payload["mac"]) == 40
-            return httpx.Response(200, json={"user_id": "@alice:insomniafest.ru"})
+            return httpx.Response(200, json={"user_id": "@test_user:insomniafest.ru"})
 
         return httpx.Response(404, text="not found")
 
@@ -110,7 +110,7 @@ def test_register_synapse_user_http_flow(monkeypatch):
         build_async_client_factory(real_async_client, transport),
     )
 
-    ok, error = asyncio.run(bot.register_synapse_user("alice", "p@ss"))
+    ok, error = asyncio.run(bot.register_synapse_user("test_user", "p@ss"))
 
     assert ok is True
     assert error is None
@@ -166,7 +166,7 @@ def test_join_user_to_rooms_partial_failure(monkeypatch):
 
         joined_paths.append(request.url.path)
         payload = json.loads(request.content.decode("utf-8"))
-        assert payload["user_id"] == "@alice:insomniafest.ru"
+        assert payload["user_id"] == "@test_user:insomniafest.ru"
 
         if len(joined_paths) == 1:
             return httpx.Response(200, json={})
@@ -181,7 +181,7 @@ def test_join_user_to_rooms_partial_failure(monkeypatch):
     )
 
     ok, failed = asyncio.run(
-        bot.join_user_to_rooms("alice", ["#ok:insomniafest.ru", "#fail:insomniafest.ru"])
+        bot.join_user_to_rooms("test_user", ["#ok:insomniafest.ru", "#fail:insomniafest.ru"])
     )
 
     assert ok is False

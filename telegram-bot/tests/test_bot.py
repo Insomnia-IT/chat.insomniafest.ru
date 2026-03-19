@@ -260,25 +260,25 @@ def test_ops_check_reports_memberships(monkeypatch):
     bot.grist_team_id_to_name.update({2: "2026.GR(Организатор)"})
 
     async def fake_check_user_eligibility(handle):
-        assert handle == "@anya_strezhneva"
-        return True, True, "Анна Стрежнева", {2: True}
+        assert handle == "@test_member"
+        return True, True, "Test Person", {2: True}
 
     monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
 
     update = DummyUpdate(user_id=1, username="admin")
-    context = DummyContext(args=["@anya_strezhneva"])
+    context = DummyContext(args=["@test_member"])
 
     asyncio.run(bot.ops_check(update, context))
 
     assert update.message.sent
     text = update.message.sent[0]["text"]
     assert "Eligible" in text
-    assert "Анна Стрежнева" in text
+    assert "Test Person" in text
     assert "team=2" in text
     assert "organizer=true" in text
 
 
-def test_ops_probe_reports_room_results(monkeypatch):
+def test_ops_register_reports_full_flow_results(monkeypatch):
     bot = load_bot_module(monkeypatch)
 
     bot.ADMIN_TELEGRAM_IDS.clear()
@@ -287,27 +287,47 @@ def test_ops_probe_reports_room_results(monkeypatch):
     bot.grist_team_id_to_name.update({1: "OneLab", 2: "GR"})
 
     async def fake_check_user_eligibility(handle):
-        return True, True, "Анна", {1: False, 2: True}
+        return True, True, "Test Person", {1: False, 2: True}
 
-    async def fake_ensure_team_room(team_id, team_name):
-        if team_id == 1:
-            return "!room1:insomniafest.ru"
-        return None
+    async def fake_register_synapse_user(username, password):
+        assert username == "test_member"
+        assert isinstance(password, str)
+        return True, None
+
+    async def fake_set_synapse_display_name(username, display_name):
+        assert username == "test_member"
+        assert display_name == "Test Person"
+        return True
+
+    async def fake_join_user_to_rooms(username, rooms):
+        assert username == "test_member"
+        return True, []
+
+    async def fake_join_user_to_team_rooms(username, memberships):
+        assert username == "test_member"
+        assert memberships == {1: False, 2: True}
+        return False, ["GR"], ["GR"]
 
     monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
-    monkeypatch.setattr(bot, "ensure_team_room", fake_ensure_team_room)
+    monkeypatch.setattr(bot, "register_synapse_user", fake_register_synapse_user)
+    monkeypatch.setattr(bot, "set_synapse_display_name", fake_set_synapse_display_name)
+    monkeypatch.setattr(bot, "join_user_to_rooms", fake_join_user_to_rooms)
+    monkeypatch.setattr(bot, "join_user_to_team_rooms", fake_join_user_to_team_rooms)
 
     update = DummyUpdate(user_id=1, username="admin")
-    context = DummyContext(args=["@anya_strezhneva"])
+    context = DummyContext(args=["@test_member"])
 
-    asyncio.run(bot.ops_probe(update, context))
+    asyncio.run(bot.ops_register(update, context))
 
     assert update.message.sent
     text = update.message.sent[0]["text"]
-    assert "Team room probe" in text
-    assert "ok team=1" in text
-    assert "fail team=2" in text
-    assert "failed=GR" in text
+    assert "Admin full registration" in text
+    assert "mxid=@test_member:insomniafest.ru" in text
+    assert "created=true" in text
+    assert "default_join_ok=true" in text
+    assert "team_join_ok=false" in text
+    assert "failed_team_rooms=GR" in text
+    assert "failed_moderation_rooms=GR" in text
 
 
 def test_normalize_room_alias_and_localpart(monkeypatch):
@@ -395,8 +415,8 @@ def test_sync_grist_cache_handles_real_grist_schema(monkeypatch):
         {
             "id": 6178,
             "fields": {
-                "Telegram2": ["", "@anya_strezhneva"],
-                "person_name": "Анна Стрежнева",
+                "Telegram2": ["", "@test_member"],
+                "person_name": "Test Person",
                 "team": "2",
                 "role_code": "ORGANIZER",
             },
@@ -404,8 +424,8 @@ def test_sync_grist_cache_handles_real_grist_schema(monkeypatch):
         {
             "id": 6179,
             "fields": {
-                "Telegram2": "@anya_strezhneva",
-                "person_name": "Анна Стрежнева",
+                "Telegram2": "@test_member",
+                "person_name": "Test Person",
                 "team": 1,
                 "role_code": "PARTICIPANT",
             },
@@ -425,9 +445,9 @@ def test_sync_grist_cache_handles_real_grist_schema(monkeypatch):
 
     assert ok is True
     assert bot.grist_team_id_to_name == {1: "1L Лаборатория", 2: "2026.GR(Организатор)"}
-    assert bot.grist_handle_to_record_id["anya_strezhneva"] == 6179
-    assert bot.grist_handle_to_person_name["anya_strezhneva"] == "Анна Стрежнева"
-    assert bot.grist_handle_to_team_memberships["anya_strezhneva"] == {2: True, 1: False}
+    assert bot.grist_handle_to_record_id["test_member"] == 6179
+    assert bot.grist_handle_to_person_name["test_member"] == "Test Person"
+    assert bot.grist_handle_to_team_memberships["test_member"] == {2: True, 1: False}
 
 
 def test_join_user_to_team_rooms_sets_moderator_only_for_organizers(monkeypatch):
@@ -696,7 +716,7 @@ def test_help_command(monkeypatch):
     assert len(update.message.sent) == 1
     assert bot.HELP_URL in update.message.sent[0]["text"]
     assert "Команды владельца" not in update.message.sent[0]["text"]
-    assert update.message.sent[0]["parse_mode"] == bot.ParseMode.MARKDOWN
+    assert update.message.sent[0]["parse_mode"] is None
 
 
 def test_help_command_admin_includes_owner_commands(monkeypatch):
@@ -711,10 +731,10 @@ def test_help_command_admin_includes_owner_commands(monkeypatch):
 
     assert len(update.message.sent) == 1
     text = update.message.sent[0]["text"]
-    assert "Команды владельца" in text
+    assert "Команды админов" in text
     assert "/ops_sync" in text
     assert "/ops_check" in text
-    assert "/ops_probe" in text
+    assert "/ops_register" in text
     assert "/ops_fake_register" in text
 
 

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 import logging
 import asyncio
@@ -34,6 +36,8 @@ AUTO_JOIN_ROOMS = (
 ORGS_ROOM = '#orgs:insomniafest.ru'
 GRIST_DOC_ID = "mhwDM83vLmT3"
 GRIST_TABLE_ID = "Participations"
+GRIST_TEAMS_TABLE_ID = "Teams"
+TEAM_ROOM_MODERATOR_LEVEL = 50
 
 GRIST_API_KEY = os.getenv('GRIST_API_KEY')
 OWNER_TELEGRAM_ID_RAW = os.getenv('OWNER_TELEGRAM_ID')
@@ -66,7 +70,8 @@ GRIST_CACHE_FULL_SYNC_INTERVAL = 600  # seconds
 grist_cache_lock = asyncio.Lock()
 grist_handle_to_record_id = {}
 grist_handle_to_person_name = {}
-grist_handle_to_role = {}
+grist_handle_to_team_memberships = {}
+grist_team_id_to_name = {}
 grist_max_record_id = 0
 grist_last_full_sync = 0.0
 
@@ -98,9 +103,37 @@ async def request_with_retries(
             await asyncio.sleep(backoff_seconds)
 
 
-def normalize_telegram_handle(handle: str) -> str:
+def normalize_telegram_handle(handle) -> str:
     """Normalize Telegram handles for case-insensitive matching."""
-    return handle.lstrip('@').strip().lower()
+    if isinstance(handle, (list, tuple)):
+        for candidate in handle:
+            normalized = normalize_telegram_handle(candidate)
+            if normalized:
+                return normalized
+        return ""
+
+    if not isinstance(handle, str):
+        return ""
+
+    return handle.strip().lstrip('@').lower()
+
+
+def parse_grist_ref_id(value) -> int | None:
+    """Parse Grist reference cell that may be int, numeric string, or list/tuple."""
+    if isinstance(value, (list, tuple)):
+        if not value:
+            return None
+        value = value[0]
+
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return None
+
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 async def fetch_grist_records_via_records_api() -> list:
@@ -135,17 +168,41 @@ async def fetch_grist_records_via_records_api() -> list:
     return data.get("records", [])
 
 
+async def fetch_grist_teams_via_records_api() -> list:
+    """Fetch teams from Grist Teams table."""
+    url = f"https://grist.insomniafest.ru/api/docs/{GRIST_DOC_ID}/tables/{GRIST_TEAMS_TABLE_ID}/records"
+    headers = {
+        "Authorization": f"Bearer {GRIST_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+        response = await request_with_retries(
+            client,
+            "GET",
+            url,
+            headers=headers,
+        )
+
+    if response.status_code != 200:
+        raise RuntimeError(f"Grist teams API error: {response.status_code} {response.text}")
+
+    data = response.json()
+    return data.get("records", [])
+
+
 async def sync_grist_cache(force_full: bool = False) -> bool:
     """Sync eligibility cache from Grist records API."""
     global grist_max_record_id, grist_last_full_sync
 
     async with grist_cache_lock:
         now = time.time()
-        do_full_sync = (
-            force_full
-            or not grist_handle_to_record_id
-            or (now - grist_last_full_sync) >= GRIST_CACHE_FULL_SYNC_INTERVAL
-        )
+        if (
+            not force_full
+            and grist_handle_to_record_id
+            and (now - grist_last_full_sync) < GRIST_CACHE_FULL_SYNC_INTERVAL
+        ):
+            return True
 
         try:
             records = await fetch_grist_records_via_records_api()
@@ -153,10 +210,30 @@ async def sync_grist_cache(force_full: bool = False) -> bool:
             logger.error(f"Failed to sync Grist cache via records API: {e}")
             return False
 
+        try:
+            team_records = await fetch_grist_teams_via_records_api()
+        except Exception as e:
+            logger.warning(f"Failed to sync Grist teams cache: {e}")
+            team_records = []
+
         grist_handle_to_record_id.clear()
         grist_handle_to_person_name.clear()
-        grist_handle_to_role.clear()
+        grist_handle_to_team_memberships.clear()
+        grist_team_id_to_name.clear()
         grist_max_record_id = 0
+
+        for team_record in team_records:
+            team_id = team_record.get("id")
+            team_fields = team_record.get("fields", {})
+            team_name = team_fields.get("team_name")
+
+            try:
+                team_id = int(team_id)
+            except (TypeError, ValueError):
+                continue
+
+            if isinstance(team_name, str) and team_name.strip():
+                grist_team_id_to_name[team_id] = team_name.strip()
 
         for record in records:
             fields = record.get("fields", {})
@@ -164,10 +241,9 @@ async def sync_grist_cache(force_full: bool = False) -> bool:
             if record_id is None:
                 record_id = record.get("id")
             telegram2 = fields.get("Telegram2")
-            if not telegram2:
-                continue
             person_name = fields.get("person_name")
-            role = fields.get("role")
+            team_id = parse_grist_ref_id(fields.get("team"))
+            role_code = fields.get("role_code")
 
             try:
                 record_id = int(record_id)
@@ -183,16 +259,26 @@ async def sync_grist_cache(force_full: bool = False) -> bool:
                 grist_handle_to_person_name[normalized] = person_name.strip()
             else:
                 grist_handle_to_person_name.pop(normalized, None)
+
             try:
-                grist_handle_to_role[normalized] = int(role)
+                if team_id is None:
+                    raise ValueError("empty team ref")
+                memberships = grist_handle_to_team_memberships.setdefault(normalized, {})
+                is_organizer = (
+                    isinstance(role_code, str)
+                    and role_code.strip().upper() == "ORGANIZER"
+                )
+                memberships[team_id] = memberships.get(team_id, False) or is_organizer
             except (TypeError, ValueError):
-                grist_handle_to_role.pop(normalized, None)
+                pass
+
             if record_id > grist_max_record_id:
                 grist_max_record_id = record_id
 
         grist_last_full_sync = now
         logger.info(
-            f"Grist sync complete: {len(grist_handle_to_record_id)} handles, max_id={grist_max_record_id}"
+            f"Grist sync complete: {len(grist_handle_to_record_id)} handles, "
+            f"{len(grist_team_id_to_name)} teams, max_id={grist_max_record_id}"
         )
 
         return True
@@ -270,7 +356,7 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("Проверяю вашу благонадежность...")
         
         # Check if user is in the Grist list
-        is_eligible, eligibility_check_ok, person_name, grist_role = await check_user_eligibility(username)
+        is_eligible, eligibility_check_ok, person_name, team_memberships = await check_user_eligibility(username)
 
         if not eligibility_check_ok:
             await update.message.reply_text(
@@ -286,7 +372,7 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         
         # Register user in Synapse
         temp_password = secrets.token_urlsafe(12)
-        is_organizer = grist_role in (1, 2)
+        is_organizer = any(team_memberships.values())
         success, registration_error_code = await register_synapse_user(
             username,
             temp_password,
@@ -303,6 +389,10 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 room_aliases.append(ORGS_ROOM)
 
             join_ok, failed_rooms = await join_user_to_rooms(username, room_aliases)
+            team_join_ok, failed_team_rooms, failed_moderation_rooms = await join_user_to_team_rooms(
+                username,
+                team_memberships,
+            )
             escaped_username = escape_markdown(username, version=1)
             escaped_password = escape_markdown(temp_password, version=1)
             message = f"""✅ Поздравляем!
@@ -330,6 +420,36 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                         "⚠️ Автодобавление в комнаты не удалось\n"
                         f"username={username}\n"
                         f"failed_rooms={', '.join(failed_rooms)}"
+                    ),
+                )
+
+            if not team_join_ok and failed_team_rooms:
+                await update.message.reply_text(
+                    "⚠️ Аккаунт создан, но не удалось автоматически добавить вас в командные комнаты: "
+                    f"{', '.join(failed_team_rooms)}."
+                )
+
+                await notify_owner(
+                    context,
+                    (
+                        "⚠️ Автодобавление в командные комнаты не удалось\n"
+                        f"username={username}\n"
+                        f"failed_team_rooms={', '.join(failed_team_rooms)}"
+                    ),
+                )
+
+            if failed_moderation_rooms:
+                await update.message.reply_text(
+                    "⚠️ Вы добавлены в командные комнаты, но не удалось выдать права модератора в: "
+                    f"{', '.join(failed_moderation_rooms)}."
+                )
+
+                await notify_owner(
+                    context,
+                    (
+                        "⚠️ Не удалось выдать права модератора в командных комнатах\n"
+                        f"username={username}\n"
+                        f"failed_moderation_rooms={', '.join(failed_moderation_rooms)}"
                     ),
                 )
         elif registration_error_code == "M_USER_IN_USE":
@@ -395,12 +515,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
 
 
-async def check_user_eligibility(telegram_handle: str) -> tuple[bool, bool, str | None, int | None]:
-    """Return (is_eligible, check_ok, person_name, role) using in-memory Grist cache."""
+async def check_user_eligibility(telegram_handle: str) -> tuple[bool, bool, str | None, dict[int, bool]]:
+    """Return (is_eligible, check_ok, person_name, team_memberships) using in-memory Grist cache."""
     try:
         if not telegram_handle:
             logger.warning("Empty telegram handle provided")
-            return False, True, None, None
+            return False, True, None, {}
 
         handle = normalize_telegram_handle(telegram_handle)
 
@@ -409,7 +529,8 @@ async def check_user_eligibility(telegram_handle: str) -> tuple[bool, bool, str 
             logger.info(
                 f"User {handle} found in Grist cache (record_id={grist_handle_to_record_id[handle]})"
             )
-            return True, True, grist_handle_to_person_name.get(handle), grist_handle_to_role.get(handle)
+            memberships = grist_handle_to_team_memberships.get(handle, {})
+            return True, True, grist_handle_to_person_name.get(handle), dict(memberships)
 
         # Cache miss: try syncing once, then re-check.
         sync_ok = await sync_grist_cache(force_full=False)
@@ -417,20 +538,21 @@ async def check_user_eligibility(telegram_handle: str) -> tuple[bool, bool, str 
         # If Grist is temporarily unavailable, keep serving from stale cache.
         if not sync_ok and not grist_handle_to_record_id:
             logger.warning("Grist cache unavailable and empty")
-            return False, False, None, None
+            return False, False, None, {}
 
         if handle in grist_handle_to_record_id:
             logger.info(
                 f"User {handle} found in Grist cache after sync (record_id={grist_handle_to_record_id[handle]})"
             )
-            return True, True, grist_handle_to_person_name.get(handle), grist_handle_to_role.get(handle)
+            memberships = grist_handle_to_team_memberships.get(handle, {})
+            return True, True, grist_handle_to_person_name.get(handle), dict(memberships)
 
         logger.warning(f"User {handle} not found in Grist cache")
-        return False, True, None, None
+        return False, True, None, {}
             
     except Exception as e:
         logger.error(f"Error checking eligibility for {telegram_handle}: {e}")
-        return False, False, None, None
+        return False, False, None, {}
 
 
 async def register_synapse_user(username: str, password: str) -> tuple[bool, str | None]:
@@ -545,6 +667,239 @@ async def set_synapse_display_name(username: str, display_name: str) -> bool:
 def to_mxid(localpart: str) -> str:
     """Build full MXID from a localpart."""
     return f"@{localpart}:{SYNAPSE_SERVER_NAME}"
+
+
+def get_team_name(team_id: int) -> str:
+    """Get team name by id, with a fallback."""
+    team_name = grist_team_id_to_name.get(team_id)
+    if isinstance(team_name, str) and team_name.strip():
+        return team_name.strip()
+    return f"Команда {team_id}"
+
+
+def build_team_room_alias(team_id: int) -> str:
+    """Build deterministic alias for a team room."""
+    return f"#team-{team_id}:{SYNAPSE_SERVER_NAME}"
+
+
+async def resolve_room_alias(alias: str) -> str | None:
+    """Resolve Matrix room alias to room id."""
+    if not SYNAPSE_ADMIN_ACCESS_TOKEN:
+        return None
+
+    headers = {
+        "Authorization": f"Bearer {SYNAPSE_ADMIN_ACCESS_TOKEN}",
+    }
+    encoded_alias = quote(alias, safe='')
+
+    try:
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+            response = await request_with_retries(
+                client,
+                "GET",
+                f"{SYNAPSE_API_URL}/_matrix/client/v3/directory/room/{encoded_alias}",
+                headers=headers,
+            )
+
+        if response.status_code != 200:
+            return None
+
+        return response.json().get("room_id")
+    except Exception as e:
+        logger.warning(f"Could not resolve alias {alias}: {e}")
+        return None
+
+
+async def find_room_id_by_name(team_name: str) -> str | None:
+    """Find room id by exact room name."""
+    if not SYNAPSE_ADMIN_ACCESS_TOKEN:
+        return None
+
+    headers = {
+        "Authorization": f"Bearer {SYNAPSE_ADMIN_ACCESS_TOKEN}",
+    }
+    params = {
+        "search_term": team_name,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+            response = await request_with_retries(
+                client,
+                "GET",
+                f"{SYNAPSE_API_URL}/_synapse/admin/v1/rooms",
+                headers=headers,
+                params=params,
+            )
+
+        if response.status_code != 200:
+            logger.warning(
+                f"Could not search room by name '{team_name}': {response.status_code} {response.text}"
+            )
+            return None
+
+        normalized_target = team_name.strip().lower()
+        for room in response.json().get("rooms", []):
+            room_name = (room.get("name") or "").strip().lower()
+            room_id = room.get("room_id")
+            if room_name == normalized_target and room_id:
+                return room_id
+    except Exception as e:
+        logger.warning(f"Could not search room by name '{team_name}': {e}")
+
+    return None
+
+
+async def create_team_room(team_id: int, team_name: str) -> str | None:
+    """Create a private team room and return room id."""
+    if not SYNAPSE_ADMIN_ACCESS_TOKEN:
+        return None
+
+    headers = {
+        "Authorization": f"Bearer {SYNAPSE_ADMIN_ACCESS_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    alias_localpart = f"team-{team_id}"
+    payload = {
+        "preset": "private_chat",
+        "name": team_name,
+        "topic": f"Команда: {team_name}",
+        "room_alias_name": alias_localpart,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+            response = await request_with_retries(
+                client,
+                "POST",
+                f"{SYNAPSE_API_URL}/_matrix/client/v3/createRoom",
+                headers=headers,
+                json=payload,
+            )
+
+            if response.status_code == 200:
+                return response.json().get("room_id")
+
+            retry_payload = {
+                "preset": "private_chat",
+                "name": team_name,
+                "topic": f"Команда: {team_name}",
+            }
+            retry_response = await request_with_retries(
+                client,
+                "POST",
+                f"{SYNAPSE_API_URL}/_matrix/client/v3/createRoom",
+                headers=headers,
+                json=retry_payload,
+            )
+
+        if retry_response.status_code == 200:
+            return retry_response.json().get("room_id")
+
+        logger.warning(
+            f"Could not create room for team '{team_name}': "
+            f"{retry_response.status_code} {retry_response.text}"
+        )
+        return None
+    except Exception as e:
+        logger.warning(f"Could not create room for team '{team_name}': {e}")
+        return None
+
+
+async def ensure_team_room(team_id: int, team_name: str) -> str | None:
+    """Ensure team room exists and return room id."""
+    alias = build_team_room_alias(team_id)
+    room_id = await resolve_room_alias(alias)
+    if room_id:
+        return room_id
+
+    room_id = await find_room_id_by_name(team_name)
+    if room_id:
+        return room_id
+
+    return await create_team_room(team_id, team_name)
+
+
+async def set_room_moderator(room_id: str, user_id: str) -> bool:
+    """Set room power level to moderator for selected user."""
+    if not SYNAPSE_ADMIN_ACCESS_TOKEN:
+        return False
+
+    headers = {
+        "Authorization": f"Bearer {SYNAPSE_ADMIN_ACCESS_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    encoded_room_id = quote(room_id, safe='')
+    power_levels_url = f"{SYNAPSE_API_URL}/_matrix/client/v3/rooms/{encoded_room_id}/state/m.room.power_levels"
+
+    try:
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+            get_response = await request_with_retries(
+                client,
+                "GET",
+                power_levels_url,
+                headers=headers,
+            )
+
+            payload = get_response.json() if get_response.status_code == 200 else {}
+            users = payload.get("users")
+            if not isinstance(users, dict):
+                users = {}
+                payload["users"] = users
+
+            current_level = users.get(user_id, 0)
+            if isinstance(current_level, int) and current_level >= TEAM_ROOM_MODERATOR_LEVEL:
+                return True
+
+            users[user_id] = TEAM_ROOM_MODERATOR_LEVEL
+            put_response = await request_with_retries(
+                client,
+                "PUT",
+                power_levels_url,
+                headers=headers,
+                json=payload,
+            )
+
+        if put_response.status_code not in (200, 201):
+            logger.warning(
+                f"Could not set moderator for {user_id} in {room_id}: "
+                f"{put_response.status_code} {put_response.text}"
+            )
+            return False
+
+        return True
+    except Exception as e:
+        logger.warning(f"Could not set moderator for {user_id} in {room_id}: {e}")
+        return False
+
+
+async def join_user_to_team_rooms(username: str, team_memberships: dict[int, bool]) -> tuple[bool, list[str], list[str]]:
+    """Join user to all team rooms, creating them if needed, and grant organizer moderation."""
+    if not team_memberships:
+        return True, [], []
+
+    failed_team_rooms = []
+    failed_moderation_rooms = []
+    user_id = to_mxid(username)
+
+    for team_id, is_organizer in sorted(team_memberships.items()):
+        team_name = get_team_name(team_id)
+        room_id = await ensure_team_room(team_id, team_name)
+        if not room_id:
+            failed_team_rooms.append(team_name)
+            continue
+
+        joined, failed_rooms = await join_user_to_rooms(username, [room_id])
+        if not joined or failed_rooms:
+            failed_team_rooms.append(team_name)
+            continue
+
+        if is_organizer:
+            moderator_ok = await set_room_moderator(room_id, user_id)
+            if not moderator_ok:
+                failed_moderation_rooms.append(team_name)
+
+    return len(failed_team_rooms) == 0, failed_team_rooms, failed_moderation_rooms
 
 
 async def join_user_to_rooms(username: str, room_aliases: list[str] | tuple[str, ...]) -> tuple[bool, list[str]]:

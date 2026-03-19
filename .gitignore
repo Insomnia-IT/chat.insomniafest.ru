@@ -8,3 +8,4 @@ data/postgres/*
 !.env.example
 config/synapse/homeserver.yaml
 *.key
+.pytest_cache/

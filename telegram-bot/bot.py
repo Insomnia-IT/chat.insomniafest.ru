@@ -396,6 +396,26 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             username,
             temp_password,
         )
+        account_reactivated = False
+
+        if not success and registration_error_code == "M_USER_IN_USE":
+            reactivation_ok, reactivation_error_code = await reactivate_synapse_user(
+                username,
+                temp_password,
+            )
+            if reactivation_ok:
+                success = True
+                registration_error_code = None
+                account_reactivated = True
+            elif reactivation_error_code not in ("ACCOUNT_ACTIVE", "REACTIVATION_TOKEN_MISSING"):
+                await notify_owner(
+                    context,
+                    (
+                        "⚠️ Не удалось ре-активировать пользователя\n"
+                        f"username={username}\n"
+                        f"reactivation_error={reactivation_error_code}"
+                    ),
+                )
         
         if success:
             if person_name:
@@ -424,6 +444,8 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 🔗 **Ссылка на чат:** {ELEMENT_URL}
 📖 **Помощь:** {HELP_URL}
             """
+            if account_reactivated:
+                message += "\n♻️ Ваш аккаунт был восстановлен после деактивации."
             await update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
 
             if not join_ok and failed_rooms:
@@ -640,8 +662,21 @@ async def ops_register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     is_organizer = any(memberships.values())
 
     register_ok, registration_error = await register_synapse_user(username, temp_password)
+    reactivated = False
 
-    created = register_ok
+    if not register_ok and registration_error == "M_USER_IN_USE":
+        reactivation_ok, reactivation_error = await reactivate_synapse_user(username, temp_password)
+        if reactivation_ok:
+            register_ok = True
+            registration_error = None
+            reactivated = True
+        elif reactivation_error not in ("ACCOUNT_ACTIVE", "REACTIVATION_TOKEN_MISSING"):
+            await update.message.reply_text(
+                f"❌ Reactivation failed for {username}: {reactivation_error}"
+            )
+            return
+
+    created = register_ok and not reactivated
     if not register_ok and registration_error != "M_USER_IN_USE":
         await update.message.reply_text(
             f"❌ Registration failed for {username}: {registration_error}"
@@ -668,6 +703,7 @@ async def ops_register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         f"mxid={to_mxid(username)}",
         f"person_name={person_name or '-'}",
         f"created={str(created).lower()}",
+        f"reactivated={str(reactivated).lower()}",
         f"displayname_updated={str(displayname_ok).lower()}",
         f"default_join_ok={str(join_ok).lower()}",
         f"team_join_ok={str(team_join_ok).lower()}",
@@ -878,6 +914,61 @@ async def register_synapse_user(username: str, password: str) -> tuple[bool, str
     except Exception as e:
         logger.error(f"Error registering user {username}: {e}")
         return False, "REGISTER_EXCEPTION"
+
+
+async def reactivate_synapse_user(username: str, password: str) -> tuple[bool, str | None]:
+    """Reactivate deactivated user and set a new password via Synapse Admin API."""
+    if not SYNAPSE_ADMIN_ACCESS_TOKEN:
+        logger.warning("SYNAPSE_ADMIN_ACCESS_TOKEN is not set; cannot reactivate users")
+        return False, "REACTIVATION_TOKEN_MISSING"
+
+    user_id = quote(to_mxid(username), safe='')
+    headers = {
+        "Authorization": f"Bearer {SYNAPSE_ADMIN_ACCESS_TOKEN}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+            get_response = await request_with_retries(
+                client,
+                "GET",
+                f"{SYNAPSE_API_URL}/_synapse/admin/v2/users/{user_id}",
+                headers=headers,
+            )
+            if get_response.status_code != 200:
+                logger.warning(
+                    f"Failed to lookup user {username}: {get_response.status_code} {get_response.text}"
+                )
+                return False, "USER_LOOKUP_FAILED"
+
+            try:
+                user_data = get_response.json()
+            except Exception:
+                user_data = {}
+
+            if not bool(user_data.get("deactivated")):
+                return False, "ACCOUNT_ACTIVE"
+
+            put_response = await request_with_retries(
+                client,
+                "PUT",
+                f"{SYNAPSE_API_URL}/_synapse/admin/v2/users/{user_id}",
+                headers=headers,
+                json={"deactivated": False, "password": password},
+            )
+
+        if put_response.status_code not in (200, 201):
+            logger.warning(
+                f"Failed to reactivate user {username}: {put_response.status_code} {put_response.text}"
+            )
+            return False, "REACTIVATION_FAILED"
+
+        logger.info(f"User {username} reactivated successfully")
+        return True, None
+    except Exception as e:
+        logger.warning(f"Error reactivating user {username}: {e}")
+        return False, "REACTIVATION_EXCEPTION"
 
 
 async def set_synapse_display_name(username: str, display_name: str) -> bool:

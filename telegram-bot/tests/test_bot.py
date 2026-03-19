@@ -596,6 +596,39 @@ def test_register_synapse_user_user_in_use(monkeypatch):
     assert code == "M_USER_IN_USE"
 
 
+def test_reactivate_synapse_user_success(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    monkeypatch.setattr(bot, "SYNAPSE_ADMIN_ACCESS_TOKEN", "token")
+
+    responses = [
+        FakeResponse(200, {"deactivated": True}),
+        FakeResponse(200, {}),
+    ]
+
+    async def fake_request_with_retries(client, method, url, **kwargs):
+        return responses.pop(0)
+
+    monkeypatch.setattr(bot, "request_with_retries", fake_request_with_retries)
+
+    ok, code = asyncio.run(bot.reactivate_synapse_user("alice", "pwd"))
+    assert ok is True
+    assert code is None
+
+
+def test_reactivate_synapse_user_account_active(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    monkeypatch.setattr(bot, "SYNAPSE_ADMIN_ACCESS_TOKEN", "token")
+
+    async def fake_request_with_retries(client, method, url, **kwargs):
+        return FakeResponse(200, {"deactivated": False})
+
+    monkeypatch.setattr(bot, "request_with_retries", fake_request_with_retries)
+
+    ok, code = asyncio.run(bot.reactivate_synapse_user("alice", "pwd"))
+    assert ok is False
+    assert code == "ACCOUNT_ACTIVE"
+
+
 def test_register_synapse_user_exception(monkeypatch):
     bot = load_bot_module(monkeypatch)
 
@@ -805,13 +838,56 @@ def test_register_user_in_use(monkeypatch):
     async def fake_register_synapse_user(username, password):
         return False, "M_USER_IN_USE"
 
+    async def fake_reactivate_synapse_user(username, password):
+        return False, "ACCOUNT_ACTIVE"
+
     monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
     monkeypatch.setattr(bot, "register_synapse_user", fake_register_synapse_user)
+    monkeypatch.setattr(bot, "reactivate_synapse_user", fake_reactivate_synapse_user)
 
     asyncio.run(bot.register(update, context))
 
     assert len(update.message.sent) == 2
     assert "уже существует" in update.message.sent[1]["text"]
+
+
+def test_register_user_in_use_reactivated(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    update = DummyUpdate(user_id=42, username="alice")
+    context = DummyContext()
+
+    bot.user_registration_times.clear()
+
+    async def fake_check_user_eligibility(username):
+        return True, True, "Alice", {72: False}
+
+    async def fake_register_synapse_user(username, password):
+        return False, "M_USER_IN_USE"
+
+    async def fake_reactivate_synapse_user(username, password):
+        return True, None
+
+    async def fake_set_synapse_display_name(username, display_name):
+        return True
+
+    async def fake_join_user_to_rooms(username, room_aliases):
+        return True, []
+
+    async def fake_join_user_to_team_rooms(username, memberships):
+        return True, [], []
+
+    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
+    monkeypatch.setattr(bot, "register_synapse_user", fake_register_synapse_user)
+    monkeypatch.setattr(bot, "reactivate_synapse_user", fake_reactivate_synapse_user)
+    monkeypatch.setattr(bot, "set_synapse_display_name", fake_set_synapse_display_name)
+    monkeypatch.setattr(bot, "join_user_to_rooms", fake_join_user_to_rooms)
+    monkeypatch.setattr(bot, "join_user_to_team_rooms", fake_join_user_to_team_rooms)
+
+    asyncio.run(bot.register(update, context))
+
+    assert len(update.message.sent) == 2
+    assert "Поздравляем" in update.message.sent[1]["text"]
+    assert "аккаунт был восстановлен" in update.message.sent[1]["text"]
 
 
 def test_register_success_happy_path(monkeypatch):

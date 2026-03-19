@@ -11,6 +11,7 @@ import time
 from urllib.parse import quote
 from telegram import Update
 from telegram.constants import ParseMode
+from telegram.error import NetworkError
 from telegram.helpers import escape_markdown
 from telegram.ext import Application, CommandHandler, ContextTypes
 
@@ -516,6 +517,10 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle unexpected telegram framework errors and alert owner."""
+    if isinstance(context.error, NetworkError):
+        logger.warning("Transient network error (will retry): %s", context.error)
+        return
+
     logger.error("Unhandled exception in Telegram handler", exc_info=context.error)
 
     user_id = "unknown"

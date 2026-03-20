@@ -680,12 +680,14 @@ def test_register_synapse_user_exception(monkeypatch):
 
 
 def test_join_user_to_rooms_no_token(monkeypatch):
+    # Missing token means auto-join is not configured; treated as success (no-op),
+    # not a failure, to avoid false-positive owner warnings when Synapse handles it.
     bot = load_bot_module(monkeypatch)
     monkeypatch.setattr(bot, "SYNAPSE_ADMIN_ACCESS_TOKEN", None)
 
     ok, failed = asyncio.run(bot.join_user_to_rooms("alice", ["#general:insomniafest.ru"]))
-    assert ok is False
-    assert failed == ["#general:insomniafest.ru"]
+    assert ok is True
+    assert failed == []
 
 
 def test_join_user_to_rooms_partial_failure(monkeypatch):
@@ -1157,7 +1159,46 @@ def test_format_exception_chain_compacts_causes(monkeypatch):
     assert " <- " in result
 
 
-def test_error_handler_network_error_logs_details_without_notifications(monkeypatch):
+def test_check_synapse_admin_token_success(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    async def fake_get(self, url, headers=None, **kwargs):
+        return FakeResponse(200, {"server_version": "1.0"})
+
+    monkeypatch.setattr(bot.httpx.AsyncClient, "get", fake_get)
+
+    ok, err = asyncio.run(bot.check_synapse_admin_token())
+    assert ok is True
+    assert err is None
+
+
+def test_check_synapse_admin_token_rejected(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    async def fake_get(self, url, headers=None, **kwargs):
+        return FakeResponse(403, {})
+
+    monkeypatch.setattr(bot.httpx.AsyncClient, "get", fake_get)
+
+    ok, err = asyncio.run(bot.check_synapse_admin_token())
+    assert ok is False
+    assert "403" in err
+
+
+def test_check_synapse_admin_token_unreachable(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    async def fake_get(self, url, headers=None, **kwargs):
+        raise bot.httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(bot.httpx.AsyncClient, "get", fake_get)
+
+    ok, err = asyncio.run(bot.check_synapse_admin_token())
+    assert ok is False
+    assert "Synapse" in err
+
+
+
     bot = load_bot_module(monkeypatch)
     monkeypatch.setattr(bot, "Update", DummyUpdate)
     update = DummyUpdate(user_id=42, username="alice", chat_id=999)

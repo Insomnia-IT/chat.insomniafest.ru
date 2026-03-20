@@ -315,10 +315,45 @@ async def notify_owner(context: ContextTypes.DEFAULT_TYPE, message: str) -> None
         logger.error(f"Failed to notify owner: {e}")
 
 
+async def check_synapse_admin_token() -> tuple[bool, str | None]:
+    """Verify the Synapse admin token by calling a lightweight admin endpoint.
+
+    Returns (True, None) on success, (False, error_message) on failure.
+    """
+    url = f"{SYNAPSE_API_URL}/_synapse/admin/v1/server_version"
+    headers = {"Authorization": f"Bearer {SYNAPSE_ADMIN_TOKEN}"}
+    try:
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+            response = await client.get(url, headers=headers)
+        if response.status_code == 200:
+            return True, None
+        if response.status_code in (401, 403):
+            return False, f"Admin token rejected by Synapse (HTTP {response.status_code})"
+        return False, f"Unexpected Synapse response: HTTP {response.status_code}"
+    except Exception as exc:
+        return False, f"Could not reach Synapse: {format_exception_chain(exc)}"
+
+
 async def post_init(application: Application) -> None:
     """Notify owner that bot started and basic configuration is loaded."""
     if OWNER_TELEGRAM_ID is None:
         logger.warning("OWNER_TELEGRAM_ID is not set; owner notifications are disabled")
+
+    token_ok, token_error = await check_synapse_admin_token()
+    if not token_ok:
+        logger.critical("Synapse admin token check failed: %s", token_error)
+        if OWNER_TELEGRAM_ID is not None:
+            try:
+                await application.bot.send_message(
+                    chat_id=OWNER_TELEGRAM_ID,
+                    text=f"🚨 Бот запущен, но токен Synapse недействителен:\n{token_error}",
+                )
+            except Exception as e:
+                logger.error("Failed to send token error notification to owner: %s", e)
+
+    if not SYNAPSE_ADMIN_ACCESS_TOKEN:
+        logger.warning("SYNAPSE_ADMIN_ACCESS_TOKEN is not set; auto-join via bot is disabled")
+
     sync_ok = await sync_grist_cache(force_full=True)
     if not sync_ok:
         logger.critical("Initial Grist cache sync failed, stopping bot startup")
@@ -328,6 +363,12 @@ async def post_init(application: Application) -> None:
         return
 
     try:
+        token_status = "✅ Токен Synapse действителен" if token_ok else f"❌ Токен Synapse: {token_error}"
+        autojoin_status = (
+            "✅ Авто-добавление в комнаты активно"
+            if SYNAPSE_ADMIN_ACCESS_TOKEN
+            else "⚠️ SYNAPSE_ADMIN_ACCESS_TOKEN не задан — авто-добавление отключено"
+        )
         cache_status = (
             f"Кэш Grist: {len(grist_handle_to_record_id)} пользователей, max_id={grist_max_record_id}"
             if sync_ok
@@ -335,7 +376,7 @@ async def post_init(application: Application) -> None:
         )
         await application.bot.send_message(
             chat_id=OWNER_TELEGRAM_ID,
-            text=f"✅ Бот запущен. Уведомления об ошибках активны.\n{cache_status}",
+            text=f"✅ Бот запущен. Уведомления об ошибках активны.\n{token_status}\n{autojoin_status}\n{cache_status}",
         )
     except Exception as e:
         logger.error(f"Failed to send startup notification to owner: {e}")
@@ -1342,8 +1383,8 @@ async def join_user_to_rooms(username: str, room_aliases: list[str] | tuple[str,
         return True, []
 
     if not SYNAPSE_ADMIN_ACCESS_TOKEN:
-        logger.warning("SYNAPSE_ADMIN_ACCESS_TOKEN is not set; skipping auto-join to rooms")
-        return False, list(room_aliases)
+        logger.info("SYNAPSE_ADMIN_ACCESS_TOKEN is not set; auto-join via bot skipped (Synapse may handle it)")
+        return True, []
 
     user_id = to_mxid(username)
     headers = {
@@ -1400,6 +1441,7 @@ def main() -> None:
 if __name__ == '__main__':
     _retry_delay = 5
     while True:
+        asyncio.set_event_loop(asyncio.new_event_loop())
         try:
             main()
             break

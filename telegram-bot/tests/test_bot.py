@@ -629,6 +629,43 @@ def test_reactivate_synapse_user_account_active(monkeypatch):
     assert code == "ACCOUNT_ACTIVE"
 
 
+def test_reset_synapse_password_success(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    monkeypatch.setattr(bot, "SYNAPSE_ADMIN_ACCESS_TOKEN", "token")
+
+    async def fake_request_with_retries(client, method, url, **kwargs):
+        return FakeResponse(200, {})
+
+    monkeypatch.setattr(bot, "request_with_retries", fake_request_with_retries)
+
+    ok, code = asyncio.run(bot.reset_synapse_password("alice", "pwd"))
+    assert ok is True
+    assert code is None
+
+
+def test_reset_synapse_password_no_token(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    monkeypatch.setattr(bot, "SYNAPSE_ADMIN_ACCESS_TOKEN", None)
+
+    ok, code = asyncio.run(bot.reset_synapse_password("alice", "pwd"))
+    assert ok is False
+    assert code == "RESET_TOKEN_MISSING"
+
+
+def test_reset_synapse_password_failed(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    monkeypatch.setattr(bot, "SYNAPSE_ADMIN_ACCESS_TOKEN", "token")
+
+    async def fake_request_with_retries(client, method, url, **kwargs):
+        return FakeResponse(404, {}, text="not found")
+
+    monkeypatch.setattr(bot, "request_with_retries", fake_request_with_retries)
+
+    ok, code = asyncio.run(bot.reset_synapse_password("alice", "pwd"))
+    assert ok is False
+    assert code == "RESET_FAILED"
+
+
 def test_register_synapse_user_exception(monkeypatch):
     bot = load_bot_module(monkeypatch)
 
@@ -751,8 +788,56 @@ def test_help_command(monkeypatch):
 
     assert len(update.message.sent) == 1
     assert bot.HELP_URL in update.message.sent[0]["text"]
+    assert "/reset_password" in update.message.sent[0]["text"]
     assert "Команды владельца" not in update.message.sent[0]["text"]
     assert update.message.sent[0]["parse_mode"] is None
+
+
+def test_reset_password_rate_limited(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    update = DummyUpdate(user_id=42, username="alice")
+    context = DummyContext()
+
+    now = 1_000_000.0
+    monkeypatch.setattr(bot.time, "time", lambda: now)
+
+    bot.user_registration_times.clear()
+    bot.user_registration_times[42] = now - 10
+
+    asyncio.run(bot.reset_password(update, context))
+
+    assert len(update.message.sent) == 1
+    assert "Подождите" in update.message.sent[0]["text"]
+
+
+def test_reset_password_success(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    update = DummyUpdate(user_id=42, username="CaseMix_123")
+    context = DummyContext()
+
+    bot.user_registration_times.clear()
+    captured = {}
+
+    async def fake_check_user_eligibility(username):
+        captured["eligibility"] = username
+        return True, True, "Example User", {72: False}
+
+    async def fake_reset_synapse_password(username, password):
+        captured["reset"] = username
+        return True, None
+
+    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
+    monkeypatch.setattr(bot, "reset_synapse_password", fake_reset_synapse_password)
+
+    asyncio.run(bot.reset_password(update, context))
+
+    assert captured == {
+        "eligibility": "casemix_123",
+        "reset": "casemix_123",
+    }
+    assert len(update.message.sent) == 2
+    assert "Пароль сброшен" in update.message.sent[1]["text"]
+    assert update.message.sent[1]["parse_mode"] == bot.ParseMode.MARKDOWN
 
 
 def test_help_command_admin_includes_owner_commands(monkeypatch):
@@ -1056,3 +1141,48 @@ def test_error_handler_sends_owner_and_user_message(monkeypatch):
     assert len(notified) == 1
     assert len(context.bot.sent) == 1
     assert context.bot.sent[0]["chat_id"] == 999
+
+
+def test_format_exception_chain_compacts_causes(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    root = OSError("network is unreachable")
+    wrapped = RuntimeError("transport failed")
+    wrapped.__cause__ = root
+
+    result = bot.format_exception_chain(wrapped)
+
+    assert "RuntimeError: transport failed" in result
+    assert "OSError: network is unreachable" in result
+    assert " <- " in result
+
+
+def test_error_handler_network_error_logs_details_without_notifications(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    monkeypatch.setattr(bot, "Update", DummyUpdate)
+    update = DummyUpdate(user_id=42, username="alice", chat_id=999)
+
+    root = OSError("network is unreachable")
+    net_err = bot.NetworkError("httpx.ConnectError: All connection attempts failed")
+    net_err.__cause__ = root
+    context = DummyContext(error=net_err)
+
+    warnings = []
+    notified = []
+
+    async def fake_notify_owner(context_obj, message):
+        notified.append(message)
+
+    def fake_warning(message, *args, **kwargs):
+        warnings.append(message % args if args else message)
+
+    monkeypatch.setattr(bot, "notify_owner", fake_notify_owner)
+    monkeypatch.setattr(bot.logger, "warning", fake_warning)
+
+    asyncio.run(bot.error_handler(update, context))
+
+    assert len(notified) == 0
+    assert len(context.bot.sent) == 0
+    assert len(warnings) == 1
+    assert "NetworkError: httpx.ConnectError: All connection attempts failed" in warnings[0]
+    assert "OSError: network is unreachable" in warnings[0]

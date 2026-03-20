@@ -515,10 +515,108 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("❌ Произошла ошибка при регистрации. Пожалуйста, попробуйте позже.")
 
 
+async def reset_password(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle password reset request for existing Matrix accounts."""
+    user_id = update.effective_user.id
+    username = normalize_telegram_handle(update.effective_user.username) or str(user_id)
+
+    now = time.time()
+    prune_registration_times(now)
+    if user_id in user_registration_times:
+        time_since_last_attempt = now - user_registration_times[user_id]
+        if time_since_last_attempt < REGISTRATION_RATE_LIMIT:
+            remaining_minutes = int((REGISTRATION_RATE_LIMIT - time_since_last_attempt) / 60) + 1
+            await update.message.reply_text(
+                f"⏳ Вы уже пробовали сбросить пароль. Подождите {remaining_minutes} минут и попробуйте снова."
+            )
+            logger.warning(f"Rate limit exceeded for password reset {user_id} ({username})")
+            return
+
+    user_registration_times[user_id] = now
+
+    try:
+        await update.message.reply_text("Проверяю вашу благонадежность...")
+
+        is_eligible, eligibility_check_ok, _, _ = await check_user_eligibility(username)
+
+        if not eligibility_check_ok:
+            await update.message.reply_text(
+                "❌ Не удалось проверить данные. Пожалуйста, попробуйте еще раз через пару минут."
+            )
+            return
+
+        if not is_eligible:
+            await update.message.reply_text(
+                "❌ Ваш Telegram-аккаунт не найден в списке волонтеров 2026."
+            )
+            return
+
+        temp_password = secrets.token_urlsafe(12)
+        reset_ok, reset_error = await reset_synapse_password(username, temp_password)
+
+        if not reset_ok:
+            if reset_error == "RESET_TOKEN_MISSING":
+                await update.message.reply_text(
+                    "❌ Сброс пароля временно недоступен. Обратитесь к администратору."
+                )
+            else:
+                await update.message.reply_text(
+                    "❌ Не удалось сбросить пароль. Если аккаунта еще нет, используйте /register."
+                )
+                await notify_owner(
+                    context,
+                    (
+                        "⚠️ Не удалось выполнить сброс пароля\n"
+                        f"username={username}\n"
+                        f"reset_error={reset_error}"
+                    ),
+                )
+            return
+
+        escaped_username = escape_markdown(username, version=1)
+        escaped_password = escape_markdown(temp_password, version=1)
+        await update.message.reply_text(
+            (
+                "✅ Пароль сброшен!\n\n"
+                "Вы можете войти в чат для волонтеров, используя следующие учетные данные:\n\n"
+                f"**Имя пользователя:** {escaped_username}\n"
+                f"**Временный пароль:** {escaped_password} (поменяйте его при первом входе)\n\n"
+                f"🔗 **Ссылка на чат:** {ELEMENT_URL}\n"
+                f"📖 **Помощь:** {HELP_URL}"
+            ),
+            parse_mode=ParseMode.MARKDOWN,
+        )
+    except Exception as e:
+        logger.error(f"Password reset error for user {user_id}: {e}")
+        await notify_owner(
+            context,
+            f"⚠️ Ошибка сброса пароля\nuser_id={user_id}\nusername={username}\nerror={e}",
+        )
+        await update.message.reply_text("❌ Произошла ошибка при сбросе пароля. Пожалуйста, попробуйте позже.")
+
+
+def format_exception_chain(error: BaseException, max_depth: int = 4) -> str:
+    """Build compact exception chain string for logs."""
+    parts = []
+    current = error
+    depth = 0
+
+    while current is not None and depth < max_depth:
+        parts.append(f"{current.__class__.__name__}: {current}")
+        current = current.__cause__
+        depth += 1
+
+    if current is not None:
+        parts.append("...")
+
+    return " <- ".join(parts)
+
+
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle unexpected telegram framework errors and alert owner."""
     if isinstance(context.error, NetworkError):
-        logger.warning("Transient network error (will retry): %s", context.error)
+        details = format_exception_chain(context.error)
+        logger.warning("Transient network error (will retry): %s", details)
         return
 
     logger.error("Unhandled exception in Telegram handler", exc_info=context.error)
@@ -554,6 +652,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     message = (
         "📖 Помощь и документация\n\n"
         f"Перейдите на страницу помощи: {HELP_URL}\n\n"
+        "/register - создать аккаунт в Matrix.\n"
+        "/reset_password - сбросить пароль существующего аккаунта.\n\n"
         "Если возникнут вопросы или проблемы, напишите администраторам."
     )
 
@@ -976,6 +1076,41 @@ async def reactivate_synapse_user(username: str, password: str) -> tuple[bool, s
         return False, "REACTIVATION_EXCEPTION"
 
 
+async def reset_synapse_password(username: str, password: str) -> tuple[bool, str | None]:
+    """Reset user password via Synapse Admin API."""
+    if not SYNAPSE_ADMIN_ACCESS_TOKEN:
+        logger.warning("SYNAPSE_ADMIN_ACCESS_TOKEN is not set; cannot reset passwords")
+        return False, "RESET_TOKEN_MISSING"
+
+    user_id = quote(to_mxid(username), safe='')
+    headers = {
+        "Authorization": f"Bearer {SYNAPSE_ADMIN_ACCESS_TOKEN}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+            response = await request_with_retries(
+                client,
+                "PUT",
+                f"{SYNAPSE_API_URL}/_synapse/admin/v2/users/{user_id}",
+                headers=headers,
+                json={"password": password},
+            )
+
+        if response.status_code not in (200, 201):
+            logger.warning(
+                f"Failed to reset password for {username}: {response.status_code} {response.text}"
+            )
+            return False, "RESET_FAILED"
+
+        logger.info(f"Password reset for {username} completed")
+        return True, None
+    except Exception as e:
+        logger.warning(f"Error resetting password for {username}: {e}")
+        return False, "RESET_EXCEPTION"
+
+
 async def set_synapse_display_name(username: str, display_name: str) -> bool:
     """Set display name for a user via Synapse Admin API."""
     if not display_name:
@@ -1250,6 +1385,7 @@ def main() -> None:
     # Add command handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("register", register))
+    application.add_handler(CommandHandler("reset_password", reset_password))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("ops_sync", ops_sync))
     application.add_handler(CommandHandler("ops_check", ops_check))
@@ -1262,4 +1398,16 @@ def main() -> None:
 
 
 if __name__ == '__main__':
-    main()
+    _retry_delay = 5
+    while True:
+        try:
+            main()
+            break
+        except NetworkError as exc:
+            logger.warning(
+                "Startup network error (will retry in %ds): %s",
+                _retry_delay,
+                format_exception_chain(exc),
+            )
+            time.sleep(_retry_delay)
+            _retry_delay = min(_retry_delay * 2, 60)

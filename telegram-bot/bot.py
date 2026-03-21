@@ -545,6 +545,14 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 Если не получается войти, напишите администраторам для сброса пароля."""
             )
         else:
+            await notify_owner(
+                context,
+                (
+                    "⚠️ Не удалось зарегистрировать пользователя в Synapse\n"
+                    f"username={username}\n"
+                    f"registration_error={registration_error_code}"
+                ),
+            )
             await update.message.reply_text("❌ Не удалось создать учетную запись. Пожалуйста, попробуйте позже.")
             
     except Exception as e:
@@ -998,59 +1006,86 @@ async def register_synapse_user(username: str, password: str) -> tuple[bool, str
     """Register a user in Synapse using the shared secret method."""
     try:
         async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
-            # Step 1: Get nonce
-            nonce_response = await request_with_retries(
-                client,
-                "GET",
-                f"{SYNAPSE_API_URL}/_synapse/admin/v1/register",
-            )
-            if nonce_response.status_code != 200:
-                logger.error(
-                    f"Failed nonce request for {username}: {nonce_response.status_code} {nonce_response.text}"
+            for attempt in range(HTTP_RETRIES + 1):
+                nonce_response = await request_with_retries(
+                    client,
+                    "GET",
+                    f"{SYNAPSE_API_URL}/_synapse/admin/v1/register",
                 )
-                return False, "NONCE_REQUEST_FAILED"
-            nonce_data = nonce_response.json()
-            nonce = nonce_data.get('nonce')
-            
-            if not nonce:
-                logger.error(f"Failed to obtain nonce for {username}")
-                return False, "NONCE_MISSING"
-            
-            # Step 2: Compute HMAC-SHA1
-            admin_flag = "notadmin"
-            msg = "\x00".join([nonce, username, password, admin_flag]).encode("utf-8")
-            secret_bytes = SYNAPSE_ADMIN_TOKEN.encode("utf-8")
-            mac = hmac.new(secret_bytes, msg, hashlib.sha1).hexdigest()
-            
-            # Step 3: Register user
-            payload = {
-                "nonce": nonce,
-                "username": username,
-                "password": password,
-                "admin": False,
-                "mac": mac
-            }
-            
-            register_response = await request_with_retries(
-                client,
-                "POST",
-                f"{SYNAPSE_API_URL}/_synapse/admin/v1/register",
-                json=payload,
-            )
-            
-            if register_response.status_code == 200:
-                logger.info(f"User {username} registered successfully")
-                return True, None
-            else:
+                if nonce_response.status_code != 200:
+                    logger.error(
+                        f"Failed nonce request for {username}: {nonce_response.status_code} {nonce_response.text}"
+                    )
+                    return False, "NONCE_REQUEST_FAILED"
+                nonce_data = nonce_response.json()
+                nonce = nonce_data.get('nonce')
+
+                if not nonce:
+                    logger.error(f"Failed to obtain nonce for {username}")
+                    return False, "NONCE_MISSING"
+
+                admin_flag = "notadmin"
+                msg = "\x00".join([nonce, username, password, admin_flag]).encode("utf-8")
+                secret_bytes = SYNAPSE_ADMIN_TOKEN.encode("utf-8")
+                mac = hmac.new(secret_bytes, msg, hashlib.sha1).hexdigest()
+
+                payload = {
+                    "nonce": nonce,
+                    "username": username,
+                    "password": password,
+                    "admin": False,
+                    "mac": mac,
+                }
+
+                try:
+                    register_response = await client.post(
+                        f"{SYNAPSE_API_URL}/_synapse/admin/v1/register",
+                        json=payload,
+                    )
+                except httpx.RequestError as e:
+                    if attempt == HTTP_RETRIES:
+                        raise
+                    backoff_seconds = 0.5 * (2 ** attempt)
+                    logger.warning(
+                        "Registration POST failed for %s; refreshing nonce and retrying %d/%d: %s",
+                        username,
+                        attempt + 1,
+                        HTTP_RETRIES,
+                        format_exception_chain(e),
+                    )
+                    await asyncio.sleep(backoff_seconds)
+                    continue
+
+                if register_response.status_code == 200:
+                    logger.info(f"User {username} registered successfully")
+                    return True, None
+
                 error_code = None
                 try:
                     error_code = register_response.json().get("errcode")
                 except Exception:
                     error_code = None
 
+                error_text = (register_response.text or "").lower()
                 if register_response.status_code == 400 and error_code == "M_USER_IN_USE":
                     logger.warning(f"User {username} already exists in Synapse")
                     return False, "M_USER_IN_USE"
+
+                if register_response.status_code == 400 and "unrecognised nonce" in error_text:
+                    if attempt == HTTP_RETRIES:
+                        logger.error(
+                            f"Failed to register user {username}: {register_response.status_code} {register_response.text}"
+                        )
+                        return False, "REGISTER_FAILED"
+                    backoff_seconds = 0.5 * (2 ** attempt)
+                    logger.warning(
+                        "Synapse rejected stale nonce for %s; retrying full registration handshake %d/%d",
+                        username,
+                        attempt + 1,
+                        HTTP_RETRIES,
+                    )
+                    await asyncio.sleep(backoff_seconds)
+                    continue
 
                 logger.error(
                     f"Failed to register user {username}: {register_response.status_code} {register_response.text}"

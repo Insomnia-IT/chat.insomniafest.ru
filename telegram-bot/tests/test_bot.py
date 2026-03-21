@@ -559,9 +559,12 @@ def test_register_synapse_user_success(monkeypatch):
     async def fake_request_with_retries(client, method, url, **kwargs):
         if method == "GET":
             return FakeResponse(200, {"nonce": "abc"})
+
+    async def fake_post(self, url, **kwargs):
         return FakeResponse(200, {})
 
     monkeypatch.setattr(bot, "request_with_retries", fake_request_with_retries)
+    monkeypatch.setattr(bot.httpx.AsyncClient, "post", fake_post)
 
     ok, code = asyncio.run(bot.register_synapse_user("alice", "pwd"))
     assert ok is True
@@ -587,13 +590,43 @@ def test_register_synapse_user_user_in_use(monkeypatch):
     async def fake_request_with_retries(client, method, url, **kwargs):
         if method == "GET":
             return FakeResponse(200, {"nonce": "abc"})
+        raise AssertionError("POST should not use request_with_retries")
+
+    async def fake_post(self, url, **kwargs):
         return FakeResponse(400, {"errcode": "M_USER_IN_USE"}, text="in use")
 
     monkeypatch.setattr(bot, "request_with_retries", fake_request_with_retries)
+    monkeypatch.setattr(bot.httpx.AsyncClient, "post", fake_post)
 
     ok, code = asyncio.run(bot.register_synapse_user("alice", "pwd"))
     assert ok is False
     assert code == "M_USER_IN_USE"
+
+
+def test_register_synapse_user_retries_with_fresh_nonce(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    nonces = ["nonce-1", "nonce-2"]
+    used_nonces = []
+
+    async def fake_request_with_retries(client, method, url, **kwargs):
+        assert method == "GET"
+        return FakeResponse(200, {"nonce": nonces.pop(0)})
+
+    async def fake_post(self, url, **kwargs):
+        used_nonces.append(kwargs["json"]["nonce"])
+        if len(used_nonces) == 1:
+            return FakeResponse(400, {"errcode": "M_UNKNOWN"}, text="unrecognised nonce")
+        return FakeResponse(200, {})
+
+    monkeypatch.setattr(bot, "request_with_retries", fake_request_with_retries)
+    monkeypatch.setattr(bot.httpx.AsyncClient, "post", fake_post)
+
+    ok, code = asyncio.run(bot.register_synapse_user("alice", "pwd"))
+
+    assert ok is True
+    assert code is None
+    assert used_nonces == ["nonce-1", "nonce-2"]
 
 
 def test_reactivate_synapse_user_success(monkeypatch):
@@ -1100,6 +1133,35 @@ def test_register_success_with_join_failures(monkeypatch):
     assert "не удалось автоматически добавить вас в командные комнаты" in update.message.sent[3]["text"]
     assert "не удалось выдать права модератора" in update.message.sent[4]["text"]
     assert len(notified) == 3
+
+
+def test_register_notifies_owner_on_registration_failure(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    update = DummyUpdate(user_id=42, username="alice")
+    context = DummyContext()
+
+    bot.user_registration_times.clear()
+    notified = []
+
+    async def fake_check_user_eligibility(username):
+        return True, True, "Alice", {72: False}
+
+    async def fake_register_synapse_user(username, password):
+        return False, "M_UNKNOWN"
+
+    async def fake_notify_owner(context_obj, message):
+        notified.append(message)
+
+    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
+    monkeypatch.setattr(bot, "register_synapse_user", fake_register_synapse_user)
+    monkeypatch.setattr(bot, "notify_owner", fake_notify_owner)
+
+    asyncio.run(bot.register(update, context))
+
+    assert len(update.message.sent) == 2
+    assert "Не удалось создать учетную запись" in update.message.sent[1]["text"]
+    assert len(notified) == 1
+    assert "registration_error=M_UNKNOWN" in notified[0]
 
 
 def test_register_exception_path(monkeypatch):

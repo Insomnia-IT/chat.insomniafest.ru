@@ -480,8 +480,13 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 Вы можете войти в чат для волонтеров, используя следующие учетные данные:
 
-**Имя пользователя:** {escaped_username}
-**Временный пароль:** {escaped_password} (поменяйте его при первом входе)
+Имя пользователя:
+`{escaped_username}`
+
+Временный пароль:
+`{escaped_password}`
+
+Как оказалось, в мобильных приложениях сделать этого нельзя, зато в <a href="https://chat.insomniafest.ru">браузерной версии</a> или в десктоп-клиенте можно.
 
 🔗 **Ссылка на чат:** {ELEMENT_URL}
 📖 **Помощь:** {HELP_URL}
@@ -578,7 +583,7 @@ async def reset_password(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await update.message.reply_text(
                 f"⏳ Вы уже пробовали сбросить пароль. Подождите {remaining_minutes} минут и попробуйте снова."
             )
-            logger.warning(f"Rate limit exceeded for password reset {user_id} ({username})")
+            logger.warning(f"Password reset rate limit exceeded for password reset {user_id} ({username})")
             return
 
     user_registration_times[user_id] = now
@@ -627,9 +632,7 @@ async def reset_password(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text(
             (
                 "✅ Пароль сброшен!\n\n"
-                "Вы можете войти в чат для волонтеров, используя следующие учетные данные:\n\n"
-                f"**Имя пользователя:** {escaped_username}\n"
-                f"**Временный пароль:** {escaped_password} (поменяйте его при первом входе)\n\n"
+                f"**Временный пароль:** `{escaped_password}` (поменяйте его сразу)\n\n"
                 f"🔗 **Ссылка на чат:** {ELEMENT_URL}\n"
                 f"📖 **Помощь:** {HELP_URL}"
             ),

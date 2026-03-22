@@ -330,65 +330,6 @@ def test_ops_register_reports_full_flow_results(monkeypatch):
     assert "failed_moderation_rooms=GR" in text
 
 
-def test_normalize_room_alias_and_localpart(monkeypatch):
-    bot = load_bot_module(monkeypatch)
-
-    assert bot.normalize_room_alias("fake-1") == "#fake-1:insomniafest.ru"
-    assert bot.normalize_room_alias("#fake-2") == "#fake-2:insomniafest.ru"
-    assert bot.normalize_room_alias("#x:insomniafest.ru") == "#x:insomniafest.ru"
-
-    assert bot.sanitize_fake_localpart("@fake-user") == "fake-user"
-    assert bot.sanitize_fake_localpart("@fake-user:insomniafest.ru") == "fake-user"
-
-
-def test_ops_fake_register_requires_fake_prefix(monkeypatch):
-    bot = load_bot_module(monkeypatch)
-
-    bot.ADMIN_TELEGRAM_IDS.clear()
-    bot.ADMIN_TELEGRAM_IDS.add(1)
-
-    update = DummyUpdate(user_id=1, username="admin")
-    context = DummyContext(args=["alice"])
-
-    asyncio.run(bot.ops_fake_register(update, context))
-
-    assert update.message.sent
-    assert "must start with 'fake-'" in update.message.sent[0]["text"]
-
-
-def test_ops_fake_register_success(monkeypatch):
-    bot = load_bot_module(monkeypatch)
-
-    bot.ADMIN_TELEGRAM_IDS.clear()
-    bot.ADMIN_TELEGRAM_IDS.add(1)
-
-    async def fake_register_synapse_user(username, password):
-        assert username == "fake-1"
-        assert isinstance(password, str)
-        assert password
-        return True, None
-
-    async def fake_join_user_to_rooms(username, rooms):
-        assert username == "fake-1"
-        assert rooms == ["#fake-1:insomniafest.ru", "#fake-2:insomniafest.ru"]
-        return True, []
-
-    monkeypatch.setattr(bot, "register_synapse_user", fake_register_synapse_user)
-    monkeypatch.setattr(bot, "join_user_to_rooms", fake_join_user_to_rooms)
-
-    update = DummyUpdate(user_id=1, username="admin")
-    context = DummyContext(args=["fake-1", "#fake-1", "#fake-2"])
-
-    asyncio.run(bot.ops_fake_register(update, context))
-
-    assert update.message.sent
-    text = update.message.sent[0]["text"]
-    assert "Fake registration smoke test" in text
-    assert "mxid=@fake-1:insomniafest.ru" in text
-    assert "created=true" in text
-    assert "join_ok=true" in text
-
-
 def test_sync_grist_cache_handles_real_grist_schema(monkeypatch):
     bot = load_bot_module(monkeypatch)
 
@@ -891,7 +832,6 @@ def test_help_command_admin_includes_owner_commands(monkeypatch):
     assert "/ops_sync" in text
     assert "/ops_check" in text
     assert "/ops_register" in text
-    assert "/ops_fake_register" in text
 
 
 def test_register_rate_limited(monkeypatch):

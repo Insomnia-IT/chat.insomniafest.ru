@@ -164,6 +164,7 @@ def test_sync_grist_cache_builds_team_memberships_and_teams(monkeypatch):
                 "person_name": "Alice",
                 "team": 72,
                 "role_code": "ORGANIZER",
+                "isHR_Now": True,
             },
         },
         {
@@ -207,6 +208,7 @@ def test_sync_grist_cache_builds_team_memberships_and_teams(monkeypatch):
     assert bot.grist_team_id_to_name == {72: "Точка сборки", 73: "Лес"}
     assert bot.grist_handle_to_team_memberships["alice"] == {72: True, 73: False}
     assert bot.grist_handle_to_team_memberships["bob"] == {72: False}
+    assert bot.grist_handle_to_is_hr_now["alice"] is True
 
 
 def test_require_admin_denies_non_admin(monkeypatch):
@@ -220,6 +222,20 @@ def test_require_admin_denies_non_admin(monkeypatch):
     assert allowed is False
     assert update.message.sent
     assert "недоступна" in update.message.sent[0]["text"].lower()
+
+
+def test_require_admin_allows_hr_from_grist_cache(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.ADMIN_TELEGRAM_IDS.clear()
+    bot.grist_handle_to_is_hr_now.clear()
+    bot.grist_handle_to_is_hr_now["alice"] = True
+
+    update = DummyUpdate(user_id=999, username="alice")
+    allowed = asyncio.run(bot.require_admin(update))
+
+    assert allowed is True
+    assert update.message.sent == []
 
 
 def test_ops_sync_admin_success(monkeypatch):
@@ -828,10 +844,29 @@ def test_help_command_admin_includes_owner_commands(monkeypatch):
 
     assert len(update.message.sent) == 1
     text = update.message.sent[0]["text"]
-    assert "Команды админов" in text
-    assert "/ops_sync" in text
-    assert "/ops_check" in text
-    assert "/ops_register" in text
+    assert "Команды HR" in text
+    assert "/hr_sync" in text
+    assert "/hr_check" in text
+    assert "/hr_register" in text
+
+
+def test_help_command_hr_user_includes_hr_commands(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    bot.ADMIN_TELEGRAM_IDS.clear()
+    bot.grist_handle_to_is_hr_now.clear()
+    bot.grist_handle_to_is_hr_now["alice"] = True
+
+    update = DummyUpdate(user_id=999, username="alice")
+    context = DummyContext()
+
+    asyncio.run(bot.help_command(update, context))
+
+    assert len(update.message.sent) == 1
+    text = update.message.sent[0]["text"]
+    assert "Команды HR" in text
+    assert "/hr_sync" in text
+    assert "/hr_check" in text
+    assert "/hr_register" in text
 
 
 def test_register_rate_limited(monkeypatch):

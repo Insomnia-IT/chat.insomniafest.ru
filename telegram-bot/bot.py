@@ -87,6 +87,7 @@ grist_cache_lock = asyncio.Lock()
 grist_handle_to_record_id = {}
 grist_handle_to_person_name = {}
 grist_handle_to_team_memberships = {}
+grist_handle_to_is_hr_now = {}
 grist_team_id_to_name = {}
 grist_max_record_id = 0
 grist_last_full_sync = 0.0
@@ -150,6 +151,18 @@ def parse_grist_ref_id(value) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def parse_grist_bool(value) -> bool:
+    """Parse boolean-ish values coming from Grist fields."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        return normalized in {"1", "true", "yes", "y", "on"}
+    return False
 
 
 async def fetch_grist_records_via_records_api() -> list:
@@ -235,6 +248,7 @@ async def sync_grist_cache(force_full: bool = False) -> bool:
         grist_handle_to_record_id.clear()
         grist_handle_to_person_name.clear()
         grist_handle_to_team_memberships.clear()
+        grist_handle_to_is_hr_now.clear()
         grist_team_id_to_name.clear()
         grist_max_record_id = 0
 
@@ -260,6 +274,7 @@ async def sync_grist_cache(force_full: bool = False) -> bool:
             person_name = fields.get("person_name")
             team_id = parse_grist_ref_id(fields.get("team"))
             role_code = fields.get("role_code")
+            is_hr_now = parse_grist_bool(fields.get("isHR_Now"))
 
             try:
                 record_id = int(record_id)
@@ -275,6 +290,9 @@ async def sync_grist_cache(force_full: bool = False) -> bool:
                 grist_handle_to_person_name[normalized] = person_name.strip()
             else:
                 grist_handle_to_person_name.pop(normalized, None)
+
+            if is_hr_now:
+                grist_handle_to_is_hr_now[normalized] = True
 
             try:
                 if team_id is None:
@@ -705,37 +723,64 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "Если возникнут вопросы или проблемы, напишите администраторам."
     )
 
-    if is_admin_telegram_user(update):
+    if await is_hr_command_user(update):
         message += (
             "\n\n"
-            "🔐 Команды админов (скрытые)\n\n"
-            "/ops_sync - принудительно обновить кэш Grist и показать счетчики.\n"
-            "/ops_check @handle - проверить eligibility и членство по командам.\n"
-            "/ops_register @handle - выполнить полную регистрацию: Matrix-аккаунт, автодобавление в комнаты и командные комнаты."
+            "🔐 Команды HR (скрытые)\n\n"
+            "/hr_sync - принудительно обновить кэш Grist и показать счетчики.\n"
+            "/hr_check @handle - проверить eligibility и членство по командам.\n"
+            "/hr_register @handle - выполнить полную регистрацию: Matrix-аккаунт, автодобавление в комнаты и командные комнаты."
         )
 
     await update.message.reply_text(message)
 
 
 def is_admin_telegram_user(update: Update) -> bool:
-    """Check whether Telegram user is allowed to run hidden ops commands."""
+    """Check whether Telegram user is allowed by static admin list."""
     if not update or not update.effective_user:
         return False
     return update.effective_user.id in ADMIN_TELEGRAM_IDS
 
 
-async def require_admin(update: Update) -> bool:
-    """Return True for admin users, otherwise send denial message."""
+async def is_hr_command_user(update: Update) -> bool:
+    """Check whether Telegram user can run hidden HR commands."""
     if is_admin_telegram_user(update):
+        return True
+
+    if not update or not update.effective_user:
+        return False
+
+    handle = normalize_telegram_handle(update.effective_user.username)
+    if not handle:
+        return False
+
+    if grist_handle_to_is_hr_now.get(handle, False):
+        return True
+
+    sync_ok = await sync_grist_cache(force_full=False)
+    if not sync_ok:
+        return False
+
+    return grist_handle_to_is_hr_now.get(handle, False)
+
+
+async def require_hr(update: Update) -> bool:
+    """Return True for static-admin/HR users, otherwise send denial message."""
+    if await is_hr_command_user(update):
         return True
 
     await update.message.reply_text("❌ Эта команда недоступна.")
     return False
 
 
+async def require_admin(update: Update) -> bool:
+    """Backward-compatible alias for hidden command permission check."""
+    return await require_hr(update)
+
+
 async def ops_sync(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Force Grist cache sync and report counters. Hidden admin-only command."""
-    if not await require_admin(update):
+    if not await require_hr(update):
         return
 
     ok = await sync_grist_cache(force_full=True)
@@ -755,11 +800,11 @@ async def ops_sync(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def ops_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Check eligibility and team memberships for a Telegram handle. Hidden admin-only command."""
-    if not await require_admin(update):
+    if not await require_hr(update):
         return
 
     if not context.args:
-        await update.message.reply_text("Usage: /ops_check <telegram_handle>")
+        await update.message.reply_text("Usage: /hr_check <telegram_handle>")
         return
 
     handle = context.args[0]
@@ -791,11 +836,11 @@ async def ops_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def ops_register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Run full registration flow for a provided handle. Hidden admin-only command."""
-    if not await require_admin(update):
+    if not await require_hr(update):
         return
 
     if not context.args:
-        await update.message.reply_text("Usage: /ops_register <telegram_handle>")
+        await update.message.reply_text("Usage: /hr_register <telegram_handle>")
         return
 
     handle = context.args[0]
@@ -1377,9 +1422,9 @@ def main() -> None:
     application.add_handler(CommandHandler("register", register))
     application.add_handler(CommandHandler("reset_password", reset_password))
     application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("ops_sync", ops_sync))
-    application.add_handler(CommandHandler("ops_check", ops_check))
-    application.add_handler(CommandHandler("ops_register", ops_register))
+    application.add_handler(CommandHandler("hr_sync", ops_sync))
+    application.add_handler(CommandHandler("hr_check", ops_check))
+    application.add_handler(CommandHandler("hr_register", ops_register))
     application.add_error_handler(error_handler)
 
     # Run the bot

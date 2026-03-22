@@ -726,10 +726,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if await is_hr_command_user(update):
         message += (
             "\n\n"
-            "🔐 Команды HR (скрытые)\n\n"
-            "/hr_sync - принудительно обновить кэш Grist и показать счетчики.\n"
-            "/hr_check @handle - проверить eligibility и членство по командам.\n"
-            "/hr_register @handle - выполнить полную регистрацию: Matrix-аккаунт, автодобавление в комнаты и командные комнаты."
+            "🔐 Команды HR\n\n"
+            "(Все данные бот берет из таблицы Участия 2026 в Гристе)\n\n"
+            "/hr_sync - принудительно обновить кэш Грист и показать счетчики (полезно сделать если человек был только что добавлен в Участия 2026).\n"
+            "/hr_check @handle - проверить есть ли человек в Участиях 2026 и членство в командах.\n"
+            "/hr_register @handle - выполнить полную регистрацию: аккаунт в чате и автодобавление в комнаты."
         )
 
     await update.message.reply_text(message)

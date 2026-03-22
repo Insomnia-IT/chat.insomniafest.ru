@@ -211,6 +211,72 @@ def test_sync_grist_cache_builds_team_memberships_and_teams(monkeypatch):
     assert bot.grist_handle_to_is_hr_now["alice"] is True
 
 
+def test_sync_grist_cache_collects_person_row_id(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.grist_handle_to_record_id.clear()
+    bot.grist_handle_to_person_row_id.clear()
+
+    participations = [
+        {
+            "id": 1,
+            "fields": {
+                "id": 1,
+                "Telegram2": "@alice",
+                "person_row_id": 21,
+                "status_code": "PLANNED",
+            },
+        }
+    ]
+
+    async def fake_fetch_grist_records_via_records_api():
+        return participations
+
+    async def fake_fetch_grist_teams_via_records_api():
+        return []
+
+    monkeypatch.setattr(bot, "fetch_grist_records_via_records_api", fake_fetch_grist_records_via_records_api)
+    monkeypatch.setattr(bot, "fetch_grist_teams_via_records_api", fake_fetch_grist_teams_via_records_api)
+
+    ok = asyncio.run(bot.sync_grist_cache(force_full=True))
+    assert ok is True
+    assert bot.grist_handle_to_person_row_id["alice"] == 21
+
+
+def test_update_grist_people_matrix_id_success(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.grist_handle_to_person_row_id.clear()
+    bot.grist_handle_to_person_row_id["alice"] = 21
+    captured = {}
+
+    async def fake_request_with_retries(client, method, url, **kwargs):
+        captured["method"] = method
+        captured["url"] = url
+        captured["json"] = kwargs.get("json")
+        return FakeResponse(200, {})
+
+    monkeypatch.setattr(bot, "request_with_retries", fake_request_with_retries)
+
+    ok, code = asyncio.run(bot.update_grist_people_matrix_id("alice", "@alice:insomniafest.ru"))
+
+    assert ok is True
+    assert code is None
+    assert captured["method"] == "PATCH"
+    assert "/tables/People/records" in captured["url"]
+    assert captured["json"]["records"][0]["id"] == 21
+    assert captured["json"]["records"][0]["fields"]["matrix_id"] == "@alice:insomniafest.ru"
+
+
+def test_update_grist_people_matrix_id_missing_person_row(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    bot.grist_handle_to_person_row_id.clear()
+
+    ok, code = asyncio.run(bot.update_grist_people_matrix_id("alice", "@alice:insomniafest.ru"))
+    assert ok is False
+    assert code == "PERSON_ROW_ID_MISSING"
+
+
 def test_require_admin_denies_non_admin(monkeypatch):
     bot = load_bot_module(monkeypatch)
 

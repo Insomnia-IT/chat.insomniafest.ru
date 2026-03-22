@@ -38,6 +38,7 @@ ORGS_ROOM = '#orgs:insomniafest.ru'
 GRIST_DOC_ID = "mhwDM83vLmT3"
 GRIST_TABLE_ID = "Participations"
 GRIST_TEAMS_TABLE_ID = "Teams"
+GRIST_PEOPLE_TABLE_ID = "People"
 TEAM_ROOM_MODERATOR_LEVEL = 50
 
 GRIST_API_KEY = os.getenv('GRIST_API_KEY')
@@ -88,6 +89,7 @@ grist_handle_to_record_id = {}
 grist_handle_to_person_name = {}
 grist_handle_to_team_memberships = {}
 grist_handle_to_is_hr_now = {}
+grist_handle_to_person_row_id = {}
 grist_team_id_to_name = {}
 grist_max_record_id = 0
 grist_last_full_sync = 0.0
@@ -249,6 +251,7 @@ async def sync_grist_cache(force_full: bool = False) -> bool:
         grist_handle_to_person_name.clear()
         grist_handle_to_team_memberships.clear()
         grist_handle_to_is_hr_now.clear()
+        grist_handle_to_person_row_id.clear()
         grist_team_id_to_name.clear()
         grist_max_record_id = 0
 
@@ -275,6 +278,9 @@ async def sync_grist_cache(force_full: bool = False) -> bool:
             team_id = parse_grist_ref_id(fields.get("team"))
             role_code = fields.get("role_code")
             is_hr_now = parse_grist_bool(fields.get("isHR_Now"))
+            person_row_id = parse_grist_ref_id(fields.get("person_row_id"))
+            if person_row_id is None:
+                person_row_id = parse_grist_ref_id(fields.get("person"))
 
             try:
                 record_id = int(record_id)
@@ -293,6 +299,9 @@ async def sync_grist_cache(force_full: bool = False) -> bool:
 
             if is_hr_now:
                 grist_handle_to_is_hr_now[normalized] = True
+
+            if person_row_id is not None:
+                grist_handle_to_person_row_id[normalized] = person_row_id
 
             try:
                 if team_id is None:
@@ -327,6 +336,51 @@ async def notify_owner(context: ContextTypes.DEFAULT_TYPE, message: str) -> None
         await context.bot.send_message(chat_id=OWNER_TELEGRAM_ID, text=message)
     except Exception as e:
         logger.error(f"Failed to notify owner: {e}")
+
+
+async def update_grist_people_matrix_id(handle: str, matrix_id: str) -> tuple[bool, str | None]:
+    """Write Matrix ID to Grist People table for the user behind telegram handle."""
+    normalized = normalize_telegram_handle(handle)
+    person_row_id = grist_handle_to_person_row_id.get(normalized)
+    if person_row_id is None:
+        return False, "PERSON_ROW_ID_MISSING"
+
+    url = f"https://grist.insomniafest.ru/api/docs/{GRIST_DOC_ID}/tables/{GRIST_PEOPLE_TABLE_ID}/records"
+    headers = {
+        "Authorization": f"Bearer {GRIST_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "records": [
+            {
+                "id": person_row_id,
+                "fields": {
+                    "matrix_id": matrix_id,
+                },
+            }
+        ]
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+            response = await request_with_retries(
+                client,
+                "PATCH",
+                url,
+                headers=headers,
+                json=payload,
+            )
+    except Exception as e:
+        logger.warning(f"Failed to update People.matrix_id for {normalized}: {e}")
+        return False, "PEOPLE_UPDATE_EXCEPTION"
+
+    if response.status_code not in (200, 201):
+        logger.warning(
+            f"Failed to update People.matrix_id for {normalized}: {response.status_code} {response.text}"
+        )
+        return False, "PEOPLE_UPDATE_FAILED"
+
+    return True, None
 
 
 async def check_synapse_admin_token() -> tuple[bool, str | None]:
@@ -478,6 +532,19 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 displayname_ok = await set_synapse_display_name(username, person_name)
                 if not displayname_ok:
                     logger.warning(f"Could not set display name for {username} to '{person_name}'")
+
+            mxid = to_mxid(username)
+            people_update_ok, people_update_error = await update_grist_people_matrix_id(username, mxid)
+            if not people_update_ok and people_update_error != "PERSON_ROW_ID_MISSING":
+                await notify_owner(
+                    context,
+                    (
+                        "⚠️ Не удалось обновить matrix_id в таблице People\n"
+                        f"username={username}\n"
+                        f"matrix_id={mxid}\n"
+                        f"people_update_error={people_update_error}"
+                    ),
+                )
 
             room_aliases = list(AUTO_JOIN_ROOMS)
             if is_organizer:

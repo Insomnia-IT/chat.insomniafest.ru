@@ -1410,6 +1410,49 @@ async def set_room_moderator(room_id: str, user_id: str) -> bool:
         return False
 
 
+async def get_room_parent_spaces(room_id: str) -> list[str]:
+    """Return parent space room IDs linked from a room via m.space.parent state."""
+    if not SYNAPSE_ADMIN_ACCESS_TOKEN:
+        return []
+
+    headers = {
+        "Authorization": f"Bearer {SYNAPSE_ADMIN_ACCESS_TOKEN}",
+    }
+    encoded_room_id = quote(room_id, safe='')
+
+    try:
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+            response = await request_with_retries(
+                client,
+                "GET",
+                f"{SYNAPSE_API_URL}/_matrix/client/v3/rooms/{encoded_room_id}/state",
+                headers=headers,
+            )
+
+        if response.status_code != 200:
+            return []
+
+        parent_spaces = []
+        seen = set()
+        for event in response.json():
+            if not isinstance(event, dict):
+                continue
+            if event.get("type") != "m.space.parent":
+                continue
+            state_key = event.get("state_key")
+            if not isinstance(state_key, str) or not state_key.startswith("!"):
+                continue
+            if state_key in seen:
+                continue
+            seen.add(state_key)
+            parent_spaces.append(state_key)
+
+        return parent_spaces
+    except Exception as e:
+        logger.warning(f"Could not fetch parent spaces for {room_id}: {e}")
+        return []
+
+
 async def join_user_to_team_rooms(username: str, team_memberships: dict[int, bool]) -> tuple[bool, list[str], list[str]]:
     """Join user to all team rooms, creating them if needed, and grant organizer moderation."""
     if not team_memberships:
@@ -1425,6 +1468,17 @@ async def join_user_to_team_rooms(username: str, team_memberships: dict[int, boo
         if not room_id:
             failed_team_rooms.append(team_name)
             continue
+
+        parent_space_ids = await get_room_parent_spaces(room_id)
+        if parent_space_ids:
+            spaces_joined, failed_spaces = await join_user_to_rooms(username, parent_space_ids)
+            if not spaces_joined or failed_spaces:
+                logger.warning(
+                    "Failed to auto-join %s to parent spaces for team '%s': %s",
+                    username,
+                    team_name,
+                    ", ".join(failed_spaces),
+                )
 
         joined, failed_rooms = await join_user_to_rooms(username, [room_id])
         if not joined or failed_rooms:

@@ -499,6 +499,11 @@ def test_join_user_to_team_rooms_sets_moderator_only_for_organizers(monkeypatch)
         ensured.append((team_id, team_name))
         return f"!room{team_id}:insomniafest.ru"
 
+    async def fake_get_room_parent_spaces(room_id):
+        if room_id == "!room72:insomniafest.ru":
+            return ["!space72:insomniafest.ru"]
+        return []
+
     async def fake_join_user_to_rooms(username, rooms):
         joined.append((username, tuple(rooms)))
         return True, []
@@ -508,6 +513,7 @@ def test_join_user_to_team_rooms_sets_moderator_only_for_organizers(monkeypatch)
         return True
 
     monkeypatch.setattr(bot, "ensure_team_room", fake_ensure_team_room)
+    monkeypatch.setattr(bot, "get_room_parent_spaces", fake_get_room_parent_spaces)
     monkeypatch.setattr(bot, "join_user_to_rooms", fake_join_user_to_rooms)
     monkeypatch.setattr(bot, "set_room_moderator", fake_set_room_moderator)
 
@@ -522,7 +528,10 @@ def test_join_user_to_team_rooms_sets_moderator_only_for_organizers(monkeypatch)
     assert failed_team_rooms == []
     assert failed_moderation_rooms == []
     assert len(ensured) == 2
-    assert len(joined) == 2
+    assert len(joined) == 3
+    assert joined[0] == ("alice", ("!space72:insomniafest.ru",))
+    assert joined[1] == ("alice", ("!room72:insomniafest.ru",))
+    assert joined[2] == ("alice", ("!room73:insomniafest.ru",))
     assert len(moderator) == 1
     assert moderator[0][0] == "!room72:insomniafest.ru"
 
@@ -535,6 +544,9 @@ def test_join_user_to_team_rooms_collects_failed_rooms(monkeypatch):
             return None
         return f"!room{team_id}:insomniafest.ru"
 
+    async def fake_get_room_parent_spaces(room_id):
+        return []
+
     async def fake_join_user_to_rooms(username, rooms):
         return True, []
 
@@ -542,6 +554,7 @@ def test_join_user_to_team_rooms_collects_failed_rooms(monkeypatch):
         return True
 
     monkeypatch.setattr(bot, "ensure_team_room", fake_ensure_team_room)
+    monkeypatch.setattr(bot, "get_room_parent_spaces", fake_get_room_parent_spaces)
     monkeypatch.setattr(bot, "join_user_to_rooms", fake_join_user_to_rooms)
     monkeypatch.setattr(bot, "set_room_moderator", fake_set_room_moderator)
 
@@ -555,6 +568,28 @@ def test_join_user_to_team_rooms_collects_failed_rooms(monkeypatch):
     assert ok is False
     assert failed_team_rooms == ["Точка сборки"]
     assert failed_moderation_rooms == []
+
+
+def test_get_room_parent_spaces_success(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    monkeypatch.setattr(bot, "SYNAPSE_ADMIN_ACCESS_TOKEN", "token")
+
+    async def fake_request_with_retries(client, method, url, **kwargs):
+        return FakeResponse(
+            200,
+            [
+                {"type": "m.space.parent", "state_key": "!space1:insomniafest.ru"},
+                {"type": "m.space.parent", "state_key": "!space2:insomniafest.ru"},
+                {"type": "m.room.name", "state_key": ""},
+                {"type": "m.space.parent", "state_key": "!space1:insomniafest.ru"},
+            ],
+        )
+
+    monkeypatch.setattr(bot, "request_with_retries", fake_request_with_retries)
+
+    spaces = asyncio.run(bot.get_room_parent_spaces("!room:insomniafest.ru"))
+
+    assert spaces == ["!space1:insomniafest.ru", "!space2:insomniafest.ru"]
 
 
 def test_sync_grist_cache_throttles_without_fetch(monkeypatch):

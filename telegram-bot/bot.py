@@ -39,7 +39,7 @@ GRIST_DOC_ID = "mhwDM83vLmT3"
 GRIST_TABLE_ID = "Participations"
 GRIST_TEAMS_TABLE_ID = "Teams"
 GRIST_PEOPLE_TABLE_ID = "People"
-TEAM_ROOM_MODERATOR_LEVEL = 50
+TEAM_ROOM_ORGANIZER_POWER_LEVEL = 100
 
 GRIST_API_KEY = os.getenv('GRIST_API_KEY')
 OWNER_TELEGRAM_ID_RAW = os.getenv('OWNER_TELEGRAM_ID')
@@ -1396,7 +1396,7 @@ async def ensure_team_room(team_id: int, team_name: str) -> str | None:
 
 
 async def set_room_moderator(room_id: str, user_id: str) -> bool:
-    """Set room power level to moderator for selected user."""
+    """Set room power level to admin for selected user via Synapse Admin API."""
     if not SYNAPSE_ADMIN_ACCESS_TOKEN:
         return False
 
@@ -1405,7 +1405,7 @@ async def set_room_moderator(room_id: str, user_id: str) -> bool:
         "Content-Type": "application/json",
     }
     encoded_room_id = quote(room_id, safe='')
-    power_levels_url = f"{SYNAPSE_API_URL}/_matrix/client/v3/rooms/{encoded_room_id}/state/m.room.power_levels"
+    power_levels_url = f"{SYNAPSE_API_URL}/_synapse/admin/v2/rooms/{encoded_room_id}/power_levels"
 
     try:
         async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
@@ -1423,10 +1423,10 @@ async def set_room_moderator(room_id: str, user_id: str) -> bool:
                 payload["users"] = users
 
             current_level = users.get(user_id, 0)
-            if isinstance(current_level, int) and current_level >= TEAM_ROOM_MODERATOR_LEVEL:
+            if isinstance(current_level, int) and current_level >= TEAM_ROOM_ORGANIZER_POWER_LEVEL:
                 return True
 
-            users[user_id] = TEAM_ROOM_MODERATOR_LEVEL
+            users[user_id] = TEAM_ROOM_ORGANIZER_POWER_LEVEL
             put_response = await request_with_retries(
                 client,
                 "PUT",
@@ -1437,14 +1437,14 @@ async def set_room_moderator(room_id: str, user_id: str) -> bool:
 
         if put_response.status_code not in (200, 201):
             logger.warning(
-                f"Could not set moderator for {user_id} in {room_id}: "
+                f"Could not set admin for {user_id} in {room_id}: "
                 f"{put_response.status_code} {put_response.text}"
             )
             return False
 
         return True
     except Exception as e:
-        logger.warning(f"Could not set moderator for {user_id} in {room_id}: {e}")
+        logger.warning(f"Could not set admin for {user_id} in {room_id}: {e}")
         return False
 
 

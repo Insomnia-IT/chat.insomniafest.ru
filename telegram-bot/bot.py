@@ -478,7 +478,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = """
 Привет! Я бот для регистрации в чате для волонтеров. Чтобы зарегистрироваться, отправьте команду /register.
 
-Важно: ваш аккаунт в нашем чате будет создан с тем же именем пользователя, что и тут в Telegram, чтобы ваши друзья и коллеги могли легко вас найти.
+Важно: ваш аккаунт в нашем чате будет создан с тем же именем пользователя, что и в Telegram, чтобы ваши друзья и коллеги могли легко вас найти.
     """
     await update.message.reply_text(message)
 
@@ -544,7 +544,7 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 await notify_owner(
                     context,
                     (
-                        "⚠️ Не удалось ре-активировать пользователя\n"
+                        "⚠️ Не удалось реактивировать пользователя\n"
                         f"username={username}\n"
                         f"reactivation_error={reactivation_error_code}"
                     ),
@@ -562,7 +562,7 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 await notify_owner(
                     context,
                     (
-                        "⚠️ Не удалось обновить matrix_id в таблице People\n"
+                        "⚠️ Не удалось обновить matrix_id в таблице People в Гристе\n"
                         f"username={username}\n"
                         f"matrix_id={mxid}\n"
                         f"people_update_error={people_update_error}"
@@ -593,7 +593,7 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 f"используйте <a href=\"{safe_element_url}\">браузерную версию</a> "
                 "или десктоп-клиент.\n\n"
                 f"🔗 <b>Ссылка на чат:</b> <a href=\"{safe_element_url}\">{safe_element_url}</a>\n"
-                f"📖 <b>Помощь:</b> <a href=\"{safe_help_url}\">{safe_help_url}</a>"
+                f"📖 <b>Вкратце о Чате:</b> <a href=\"{safe_help_url}\">{safe_help_url}</a>"
             )
             if account_reactivated:
                 message += "\n♻️ Ваш аккаунт был восстановлен после деактивации."
@@ -603,7 +603,7 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 await update.message.reply_text(
                     "⚠️ Аккаунт создан, но не удалось автоматически добавить вас в комнаты: "
                     f"{', '.join(failed_rooms)}.\n"
-                    "Попросите администраторов отправить вам инвайт в эти комнаты."
+                    "Попросите любого другого пользователя отправить вам инвайт в эти комнаты."
                 )
 
                 await notify_owner(
@@ -632,37 +632,37 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
             if failed_moderation_rooms:
                 await update.message.reply_text(
-                    "⚠️ Вы добавлены в командные комнаты, но не удалось выдать права модератора в: "
+                    "⚠️ Вы добавлены в командные комнаты, но не удалось выдать права администратора в: "
                     f"{', '.join(failed_moderation_rooms)}."
                 )
 
                 await notify_owner(
                     context,
                     (
-                        "⚠️ Не удалось выдать права модератора в командных комнатах\n"
+                        "⚠️ Не удалось выдать права администратора в командных комнатах\n"
                         f"username={username}\n"
                         f"failed_moderation_rooms={', '.join(failed_moderation_rooms)}"
                     ),
                 )
         elif registration_error_code == "M_USER_IN_USE":
             await update.message.reply_text(
-                f"""⚠️ Похоже, учетная запись "{username}" уже существует.
+                f"""⚠️ Учетная запись "{username}" уже существует.
 
 🔗 Попробуйте войти тут: {ELEMENT_URL}
-📖 Помощь: {HELP_URL}
+📖 Вкратце о Бессонном Чате: {HELP_URL}
 
-Если не получается войти, напишите администраторам для сброса пароля."""
+Вы можете сбросить пароль, отправив команду /reset_password."""
             )
         else:
             await notify_owner(
                 context,
                 (
-                    "⚠️ Не удалось зарегистрировать пользователя в Synapse\n"
+                    "⚠️ Не удалось зарегистрировать пользователя\n"
                     f"username={username}\n"
                     f"registration_error={registration_error_code}"
                 ),
             )
-            await update.message.reply_text("❌ Не удалось создать учетную запись. Пожалуйста, попробуйте позже.")
+            await update.message.reply_text("❌ Не удалось создать учетную запись. Администраторы получили сообщение об этом и постараются как можно скорее всё починить.")
             
     except Exception as e:
         logger.error(f"Registration error for user {user_id}: {e}")
@@ -670,7 +670,7 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             context,
             f"⚠️ Ошибка регистрации\nuser_id={user_id}\nusername={username}\nerror={e}",
         )
-        await update.message.reply_text("❌ Произошла ошибка при регистрации. Пожалуйста, попробуйте позже.")
+        await update.message.reply_text("❌ Произошла ошибка при регистрации. Администраторы получили сообщение об этом и постараются как можно скорее всё починить")
 
 
 async def reset_password(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -719,7 +719,7 @@ async def reset_password(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 )
             else:
                 await update.message.reply_text(
-                    "❌ Не удалось сбросить пароль. Если аккаунта еще нет, используйте /register."
+                    "❌ Не удалось сбросить пароль. Попробуйте сначала зарегистрироваться: /register."
                 )
                 await notify_owner(
                     context,
@@ -744,7 +744,7 @@ async def reset_password(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 f"<code>{safe_password}</code>\n\n"
                 "Поменяйте пароль сразу после входа.\n\n"
                 f"🔗 <b>Ссылка на чат:</b> <a href=\"{safe_element_url}\">{safe_element_url}</a>\n"
-                f"📖 <b>Помощь:</b> <a href=\"{safe_help_url}\">{safe_help_url}</a>"
+                f"📖 <b>Вкратце о Чате:</b> <a href=\"{safe_help_url}\">{safe_help_url}</a>"
             ),
             parse_mode=ParseMode.HTML,
         )
@@ -754,7 +754,7 @@ async def reset_password(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             context,
             f"⚠️ Ошибка сброса пароля\nuser_id={user_id}\nusername={username}\nerror={e}",
         )
-        await update.message.reply_text("❌ Произошла ошибка при сбросе пароля. Пожалуйста, попробуйте позже.")
+        await update.message.reply_text("❌ Произошла ошибка при сбросе пароля. Администраторы получили сообщение об этом и постараются как можно скорее всё починить")
 
 
 def format_exception_chain(error: BaseException, max_depth: int = 4) -> str:
@@ -813,10 +813,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     """Send help information."""
     message = (
         "📖 Помощь и документация\n\n"
-        f"Перейдите на страницу помощи: {HELP_URL}\n\n"
+        f"Вкратце о Бессонном Чате: {HELP_URL}\n\n"
         "/register - создать аккаунт в Matrix.\n"
         "/reset_password - сбросить пароль существующего аккаунта.\n\n"
-        "Если возникнут вопросы или проблемы, напишите администраторам."
+        "Если возникнут вопросы или проблемы, обратитесь к своему HR или напишите в Общий Чат https://chat.insomniafest.ru/#/room/#general:insomniafest.ru."
     )
 
     if await is_hr_command_user(update):

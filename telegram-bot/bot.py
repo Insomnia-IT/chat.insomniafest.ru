@@ -922,20 +922,25 @@ async def ops_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     normalized_handle = normalize_telegram_handle(handle)
     registration_status = await get_synapse_registration_status(normalized_handle)
+    registration_status_ru = {
+        "registered": "уже зарегистрирован",
+        "not_registered": "не зарегистрирован",
+        "unknown": "не удалось определить",
+    }.get(registration_status, "не удалось определить")
 
     lines = [
-        "✅ Eligible",
-        f"handle={normalized_handle}",
-        f"person_name={person_name or '-'}",
-        f"already_registered={registration_status}",
+        "✅ Участник найден в списке Участий 2026",
+        f"Telegram: @{normalized_handle}",
+        f"Имя: {person_name or '-'}",
+        f"Регистрация в Matrix: {registration_status_ru}",
     ]
     if memberships:
         for team_id, is_org in sorted(memberships.items()):
             lines.append(
-                f"team={team_id} name={get_team_name(team_id)} organizer={str(is_org).lower()}"
+                f"Команда #{team_id}: {get_team_name(team_id)}; роль: {'организатор' if is_org else 'участник'}"
             )
     else:
-        lines.append("team_memberships=none")
+        lines.append("Команды: не указаны")
 
     await update.message.reply_text("\n".join(lines))
 

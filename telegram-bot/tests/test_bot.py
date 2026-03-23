@@ -374,11 +374,12 @@ def test_ops_check_reports_memberships(monkeypatch):
 
     assert update.message.sent
     text = update.message.sent[0]["text"]
-    assert "Eligible" in text
-    assert "Test Person" in text
-    assert "already_registered=registered" in text
-    assert "team=2" in text
-    assert "organizer=true" in text
+    assert "Участник найден" in text
+    assert "Telegram: @test_member" in text
+    assert "Имя: Test Person" in text
+    assert "Регистрация в Matrix: уже зарегистрирован" in text
+    assert "Команда #2" in text
+    assert "роль: организатор" in text
 
 
 def test_ops_register_reports_full_flow_results(monkeypatch):

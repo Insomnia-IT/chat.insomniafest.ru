@@ -360,7 +360,12 @@ def test_ops_check_reports_memberships(monkeypatch):
         assert handle == "@test_member"
         return True, True, "Test Person", {2: True}
 
+    async def fake_get_synapse_registration_status(username):
+        assert username == "test_member"
+        return "registered"
+
     monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
+    monkeypatch.setattr(bot, "get_synapse_registration_status", fake_get_synapse_registration_status)
 
     update = DummyUpdate(user_id=1, username="admin")
     context = DummyContext(args=["@test_member"])
@@ -371,6 +376,7 @@ def test_ops_check_reports_memberships(monkeypatch):
     text = update.message.sent[0]["text"]
     assert "Eligible" in text
     assert "Test Person" in text
+    assert "already_registered=registered" in text
     assert "team=2" in text
     assert "organizer=true" in text
 
@@ -733,6 +739,36 @@ def test_reactivate_synapse_user_account_active(monkeypatch):
     ok, code = asyncio.run(bot.reactivate_synapse_user("alice", "pwd"))
     assert ok is False
     assert code == "ACCOUNT_ACTIVE"
+
+
+def test_get_synapse_registration_status_registered(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    monkeypatch.setattr(bot, "SYNAPSE_ADMIN_ACCESS_TOKEN", "token")
+
+    async def fake_request_with_retries(client, method, url, **kwargs):
+        assert method == "GET"
+        assert "/_synapse/admin/v2/users/" in url
+        return FakeResponse(200, {"name": "@alice:insomniafest.ru", "deactivated": False})
+
+    monkeypatch.setattr(bot, "request_with_retries", fake_request_with_retries)
+
+    status = asyncio.run(bot.get_synapse_registration_status("alice"))
+
+    assert status == "registered"
+
+
+def test_get_synapse_registration_status_not_registered(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    monkeypatch.setattr(bot, "SYNAPSE_ADMIN_ACCESS_TOKEN", "token")
+
+    async def fake_request_with_retries(client, method, url, **kwargs):
+        return FakeResponse(404, {}, text="not found")
+
+    monkeypatch.setattr(bot, "request_with_retries", fake_request_with_retries)
+
+    status = asyncio.run(bot.get_synapse_registration_status("alice"))
+
+    assert status == "not_registered"
 
 
 def test_reset_synapse_password_success(monkeypatch):

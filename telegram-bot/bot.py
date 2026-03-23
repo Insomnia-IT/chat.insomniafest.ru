@@ -391,6 +391,40 @@ async def check_synapse_admin_token() -> tuple[bool, str | None]:
         return False, f"Could not reach Synapse: {format_exception_chain(exc)}"
 
 
+async def get_synapse_registration_status(username: str) -> str:
+    """Return registered/not_registered/unknown for a Matrix account localpart."""
+    if not SYNAPSE_ADMIN_ACCESS_TOKEN:
+        logger.warning("SYNAPSE_ADMIN_ACCESS_TOKEN is not set; cannot check registration status")
+        return "unknown"
+
+    user_id = quote(to_mxid(username), safe='')
+    headers = {
+        "Authorization": f"Bearer {SYNAPSE_ADMIN_ACCESS_TOKEN}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+            response = await request_with_retries(
+                client,
+                "GET",
+                f"{SYNAPSE_API_URL}/_synapse/admin/v2/users/{user_id}",
+                headers=headers,
+            )
+
+        if response.status_code == 200:
+            return "registered"
+        if response.status_code == 404:
+            return "not_registered"
+
+        logger.warning(
+            f"Failed to lookup registration status for {username}: {response.status_code} {response.text}"
+        )
+        return "unknown"
+    except Exception as e:
+        logger.warning(f"Error looking up registration status for {username}: {e}")
+        return "unknown"
+
 async def post_init(application: Application) -> None:
     """Notify owner that bot started and basic configuration is loaded."""
     if OWNER_TELEGRAM_ID is None:
@@ -886,10 +920,14 @@ async def ops_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(f"❌ Not eligible: {handle}")
         return
 
+    normalized_handle = normalize_telegram_handle(handle)
+    registration_status = await get_synapse_registration_status(normalized_handle)
+
     lines = [
         "✅ Eligible",
-        f"handle={normalize_telegram_handle(handle)}",
+        f"handle={normalized_handle}",
         f"person_name={person_name or '-'}",
+        f"already_registered={registration_status}",
     ]
     if memberships:
         for team_id, is_org in sorted(memberships.items()):

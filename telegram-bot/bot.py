@@ -43,7 +43,6 @@ TEAM_ROOM_MODERATOR_LEVEL = 50
 
 GRIST_API_KEY = os.getenv('GRIST_API_KEY')
 OWNER_TELEGRAM_ID_RAW = os.getenv('OWNER_TELEGRAM_ID')
-ADMIN_TELEGRAM_IDS_RAW = os.getenv('ADMIN_TELEGRAM_IDS', '')
 
 if not TELEGRAM_BOT_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN environment variable not set")
@@ -62,16 +61,6 @@ if OWNER_TELEGRAM_ID_RAW:
 ADMIN_TELEGRAM_IDS = set()
 if OWNER_TELEGRAM_ID is not None:
     ADMIN_TELEGRAM_IDS.add(OWNER_TELEGRAM_ID)
-
-if ADMIN_TELEGRAM_IDS_RAW:
-    for raw_id in ADMIN_TELEGRAM_IDS_RAW.split(','):
-        raw_id = raw_id.strip()
-        if not raw_id:
-            continue
-        try:
-            ADMIN_TELEGRAM_IDS.add(int(raw_id))
-        except ValueError:
-            logger.error(f"Invalid ADMIN_TELEGRAM_IDS value skipped: {raw_id}")
 
 # Rate limiting: track last registration attempt per user (user_id -> timestamp)
 REGISTRATION_RATE_LIMIT = 300  # 5 minutes in seconds
@@ -831,11 +820,16 @@ async def is_hr_command_user(update: Update) -> bool:
     if grist_handle_to_is_hr_now.get(handle, False):
         return True
 
+    if any(grist_handle_to_team_memberships.get(handle, {}).values()):
+        return True
+
     sync_ok = await sync_grist_cache(force_full=False)
     if not sync_ok:
         return False
 
-    return grist_handle_to_is_hr_now.get(handle, False)
+    return grist_handle_to_is_hr_now.get(handle, False) or any(
+        grist_handle_to_team_memberships.get(handle, {}).values()
+    )
 
 
 async def require_hr(update: Update) -> bool:

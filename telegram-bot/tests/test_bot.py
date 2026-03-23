@@ -304,6 +304,21 @@ def test_require_admin_allows_hr_from_grist_cache(monkeypatch):
     assert update.message.sent == []
 
 
+def test_require_admin_allows_organizer_from_grist_cache(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.ADMIN_TELEGRAM_IDS.clear()
+    bot.grist_handle_to_is_hr_now.clear()
+    bot.grist_handle_to_team_memberships.clear()
+    bot.grist_handle_to_team_memberships["alice"] = {72: True, 73: False}
+
+    update = DummyUpdate(user_id=999, username="alice")
+    allowed = asyncio.run(bot.require_admin(update))
+
+    assert allowed is True
+    assert update.message.sent == []
+
+
 def test_ops_sync_admin_success(monkeypatch):
     bot = load_bot_module(monkeypatch)
 
@@ -930,6 +945,26 @@ def test_help_command_hr_user_includes_hr_commands(monkeypatch):
     bot.ADMIN_TELEGRAM_IDS.clear()
     bot.grist_handle_to_is_hr_now.clear()
     bot.grist_handle_to_is_hr_now["alice"] = True
+
+    update = DummyUpdate(user_id=999, username="alice")
+    context = DummyContext()
+
+    asyncio.run(bot.help_command(update, context))
+
+    assert len(update.message.sent) == 1
+    text = update.message.sent[0]["text"]
+    assert "Команды HR" in text
+    assert "/hr_sync" in text
+    assert "/hr_check" in text
+    assert "/hr_register" in text
+
+
+def test_help_command_organizer_includes_hr_commands(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    bot.ADMIN_TELEGRAM_IDS.clear()
+    bot.grist_handle_to_is_hr_now.clear()
+    bot.grist_handle_to_team_memberships.clear()
+    bot.grist_handle_to_team_memberships["alice"] = {72: True}
 
     update = DummyUpdate(user_id=999, username="alice")
     context = DummyContext()

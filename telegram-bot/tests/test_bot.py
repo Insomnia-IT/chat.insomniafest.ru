@@ -882,6 +882,7 @@ def test_reset_password_success(monkeypatch):
 
     async def fake_reset_synapse_password(username, password):
         captured["reset"] = username
+        captured["password"] = password
         return True, None
 
     monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
@@ -892,10 +893,18 @@ def test_reset_password_success(monkeypatch):
     assert captured == {
         "eligibility": "casemix_123",
         "reset": "casemix_123",
+        "password": captured["password"],
     }
     assert len(update.message.sent) == 2
-    assert "Пароль сброшен" in update.message.sent[1]["text"]
-    assert update.message.sent[1]["parse_mode"] == bot.ParseMode.MARKDOWN
+    text = update.message.sent[1]["text"]
+    assert "Пароль сброшен" in text
+    assert "<b>Имя пользователя:</b>" in text
+    assert "<code>casemix_123</code>" in text
+    assert "\\_" not in text
+    assert f"<code>{captured['password']}</code>" in text
+    assert "<a href=\"https://chat.insomniafest.ru\">https://chat.insomniafest.ru</a>" in text
+    assert "<a href=\"https://chat.insomniafest.ru/help\">https://chat.insomniafest.ru/help</a>" in text
+    assert update.message.sent[1]["parse_mode"] == bot.ParseMode.HTML
 
 
 def test_help_command_admin_includes_owner_commands(monkeypatch):
@@ -1060,11 +1069,13 @@ def test_register_success_happy_path(monkeypatch):
     context = DummyContext()
 
     bot.user_registration_times.clear()
+    captured = {}
 
     async def fake_check_user_eligibility(username):
         return True, True, "Alice", {72: True, 73: False}
 
     async def fake_register_synapse_user(username, password):
+        captured["password"] = password
         return True, None
 
     async def fake_set_synapse_display_name(username, display_name):
@@ -1085,8 +1096,15 @@ def test_register_success_happy_path(monkeypatch):
     asyncio.run(bot.register(update, context))
 
     assert len(update.message.sent) == 2
-    assert "Поздравляем" in update.message.sent[1]["text"]
-    assert update.message.sent[1]["parse_mode"] == bot.ParseMode.MARKDOWN
+    text = update.message.sent[1]["text"]
+    assert "Поздравляем" in text
+    assert "<b>Имя пользователя:</b>" in text
+    assert "<code>alice</code>" in text
+    assert "<b>Временный пароль:</b>" in text
+    assert f"<code>{captured['password']}</code>" in text
+    assert "<a href=\"https://chat.insomniafest.ru\">браузерную версию</a>" in text
+    assert "<a href=\"https://chat.insomniafest.ru/help\">https://chat.insomniafest.ru/help</a>" in text
+    assert update.message.sent[1]["parse_mode"] == bot.ParseMode.HTML
 
 
 def test_register_normalizes_mixed_case_username(monkeypatch):

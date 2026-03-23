@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import logging
 import asyncio
+import html
 import httpx
 import hmac
 import hashlib
@@ -12,7 +13,6 @@ from urllib.parse import quote
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.error import NetworkError
-from telegram.helpers import escape_markdown
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 # Configure logging
@@ -555,26 +555,26 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 username,
                 team_memberships,
             )
-            escaped_username = escape_markdown(username, version=1)
-            escaped_password = escape_markdown(temp_password, version=1)
-            message = f"""✅ Поздравляем!
-
-Вы можете войти в чат для волонтеров, используя следующие учетные данные:
-
-Имя пользователя:
-`{escaped_username}`
-
-Временный пароль:
-`{escaped_password}`
-
-Как оказалось, в мобильных приложениях сделать этого нельзя, зато в <a href="https://chat.insomniafest.ru">браузерной версии</a> или в десктоп-клиенте можно.
-
-🔗 **Ссылка на чат:** {ELEMENT_URL}
-📖 **Помощь:** {HELP_URL}
-            """
+            safe_username = html.escape(username)
+            safe_password = html.escape(temp_password)
+            safe_element_url = html.escape(ELEMENT_URL)
+            safe_help_url = html.escape(HELP_URL)
+            message = (
+                "✅ Поздравляем!\n\n"
+                "Вы можете войти в чат для волонтеров, используя следующие учетные данные:\n\n"
+                "<b>Имя пользователя:</b>\n"
+                f"<code>{safe_username}</code>\n\n"
+                "<b>Временный пароль:</b>\n"
+                f"<code>{safe_password}</code>\n\n"
+                "Обязательно поменяйте пароль при первом входе!\n\nВ мобильном приложении этого сделать нельзя, поэтому "
+                f"используйте <a href=\"{safe_element_url}\">браузерную версию</a> "
+                "или десктоп-клиент.\n\n"
+                f"🔗 <b>Ссылка на чат:</b> <a href=\"{safe_element_url}\">{safe_element_url}</a>\n"
+                f"📖 <b>Помощь:</b> <a href=\"{safe_help_url}\">{safe_help_url}</a>"
+            )
             if account_reactivated:
                 message += "\n♻️ Ваш аккаунт был восстановлен после деактивации."
-            await update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
+            await update.message.reply_text(message, parse_mode=ParseMode.HTML)
 
             if not join_ok and failed_rooms:
                 await update.message.reply_text(
@@ -708,16 +708,22 @@ async def reset_password(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 )
             return
 
-        escaped_username = escape_markdown(username, version=1)
-        escaped_password = escape_markdown(temp_password, version=1)
+        safe_username = html.escape(username)
+        safe_password = html.escape(temp_password)
+        safe_element_url = html.escape(ELEMENT_URL)
+        safe_help_url = html.escape(HELP_URL)
         await update.message.reply_text(
             (
                 "✅ Пароль сброшен!\n\n"
-                f"**Временный пароль:** `{escaped_password}` (поменяйте его сразу)\n\n"
-                f"🔗 **Ссылка на чат:** {ELEMENT_URL}\n"
-                f"📖 **Помощь:** {HELP_URL}"
+                "<b>Имя пользователя:</b>\n"
+                f"<code>{safe_username}</code>\n\n"
+                "<b>Временный пароль:</b>\n"
+                f"<code>{safe_password}</code>\n\n"
+                "Поменяйте пароль сразу после входа.\n\n"
+                f"🔗 <b>Ссылка на чат:</b> <a href=\"{safe_element_url}\">{safe_element_url}</a>\n"
+                f"📖 <b>Помощь:</b> <a href=\"{safe_help_url}\">{safe_help_url}</a>"
             ),
-            parse_mode=ParseMode.MARKDOWN,
+            parse_mode=ParseMode.HTML,
         )
     except Exception as e:
         logger.error(f"Password reset error for user {user_id}: {e}")

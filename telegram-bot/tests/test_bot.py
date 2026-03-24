@@ -1297,7 +1297,7 @@ def test_register_success_with_join_failures(monkeypatch):
     assert len(update.message.sent) == 5
     assert "не удалось автоматически добавить вас в комнаты" in update.message.sent[2]["text"]
     assert "не удалось автоматически добавить вас в командные комнаты" in update.message.sent[3]["text"]
-    assert "не удалось выдать права модератора" in update.message.sent[4]["text"]
+    assert "не удалось выдать права администратора" in update.message.sent[4]["text"]
     assert len(notified) == 3
 
 

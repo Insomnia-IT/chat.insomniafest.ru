@@ -1401,7 +1401,7 @@ async def ensure_team_room(team_id: int, team_name: str) -> str | None:
 
 
 async def set_room_moderator(room_id: str, user_id: str) -> bool:
-    """Set room power level to admin for selected user via Synapse Admin API."""
+    """Set room power level to admin for selected user via Matrix Client API."""
     if not SYNAPSE_ADMIN_ACCESS_TOKEN:
         return False
 
@@ -1410,7 +1410,7 @@ async def set_room_moderator(room_id: str, user_id: str) -> bool:
         "Content-Type": "application/json",
     }
     encoded_room_id = quote(room_id, safe='')
-    power_levels_url = f"{SYNAPSE_API_URL}/_synapse/admin/v2/rooms/{encoded_room_id}/power_levels"
+    power_levels_url = f"{SYNAPSE_API_URL}/_matrix/client/v3/rooms/{encoded_room_id}/state/m.room.power_levels"
 
     try:
         async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:

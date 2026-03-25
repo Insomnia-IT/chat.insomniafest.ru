@@ -71,9 +71,15 @@ services:
     image: livekit/livekit-server:latest
     container_name: matrix_livekit
     restart: unless-stopped
-    command: --config /etc/livekit.yaml
+    env_file:
+      - .env
+    environment:
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
     volumes:
-      - ./config/livekit/livekit.yaml:/etc/livekit.yaml:ro
+      - ./config/livekit/livekit.yaml:/etc/livekit.yaml.tmpl:ro
+      - ./config/livekit/start.sh:/start.sh:ro
+    entrypoint: ["/bin/sh", "/start.sh"]
     networks:
       - matrix
     expose:

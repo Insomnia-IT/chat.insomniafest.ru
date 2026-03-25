@@ -82,6 +82,25 @@ services:
     ports:
       - "50000-50100:50000-50100/udp"
 
+  livekit-jwt:
+    image: ghcr.io/element-hq/lk-jwt-service:0.3.0
+    container_name: matrix_livekit_jwt
+    restart: unless-stopped
+    depends_on:
+      - synapse
+      - livekit
+    env_file:
+      - .env
+    environment:
+      LIVEKIT_URL: ws://matrix_livekit:7880
+      LIVEKIT_KEY: ${LIVEKIT_API_KEY}
+      LIVEKIT_SECRET: ${LIVEKIT_API_SECRET}
+      LIVEKIT_FULL_ACCESS_HOMESERVERS: insomniafest.ru
+    networks:
+      - matrix
+    expose:
+      - "8080"
+
   telegram-bot:
     build:
       context: ./telegram-bot

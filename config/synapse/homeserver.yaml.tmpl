@@ -27,6 +27,25 @@ registration_requires_token: true
 
 enable_registration_without_verification: false
 
+experimental_features:
+  # MSC3266: Room summary API (required for some call join flows)
+  msc3266_enabled: true
+  # MSC4222: sync v2 state_after (required for reliable state tracking)
+  msc4222_enabled: true
+
+# MSC4140 delayed events are used for MatrixRTC signaling heartbeats.
+max_event_delay_duration: 24h
+
+rc_message:
+  # MatrixRTC key sharing traffic can be bursty.
+  per_second: 0.5
+  burst_count: 30
+
+rc_delayed_event_mgmt:
+  # MatrixRTC heartbeat is ~5s, so 1 req/sec keeps enough headroom.
+  per_second: 1
+  burst_count: 20
+
 auto_join_rooms:
   - "#announcements:insomniafest.ru"
   - "#general:insomniafest.ru"

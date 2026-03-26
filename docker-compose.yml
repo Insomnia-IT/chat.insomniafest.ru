@@ -39,7 +39,7 @@ services:
       - "8008"
 
   element-web:
-    image: vectorim/element-web:v1.12.6
+    image: vectorim/element-web:latest
     container_name: matrix_element
     restart: unless-stopped
     depends_on:

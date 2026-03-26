@@ -89,7 +89,7 @@ services:
       - "50000-50100:50000-50100/udp"
 
   livekit-jwt:
-    image: ghcr.io/element-hq/lk-jwt-service:0.3.0
+    image: ghcr.io/element-hq/lk-jwt-service:0.4.1
     container_name: matrix_livekit_jwt
     restart: unless-stopped
     depends_on:

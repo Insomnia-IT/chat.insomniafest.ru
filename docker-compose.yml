@@ -98,7 +98,7 @@ services:
     env_file:
       - .env
     environment:
-      LIVEKIT_URL: ws://matrix_livekit:7880
+      LIVEKIT_URL: wss://livekit.insomniafest.ru
       LIVEKIT_KEY: ${LIVEKIT_API_KEY}
       LIVEKIT_SECRET: ${LIVEKIT_API_SECRET}
       LIVEKIT_FULL_ACCESS_HOMESERVERS: insomniafest.ru

@@ -16,7 +16,7 @@ services:
       - matrix
 
   synapse:
-    image: matrixdotorg/synapse:v1.130.0
+    image: matrixdotorg/synapse:v1.150.0
     container_name: matrix_synapse
     restart: unless-stopped
     depends_on:

@@ -834,46 +834,32 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text(message)
 
 
-async def my_teams(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Check caller participation and ensure membership in all team chats."""
-    user_id = update.effective_user.id
-    username = normalize_telegram_handle(update.effective_user.username) or str(user_id)
+async def prepare_team_sync_target(handle: str) -> tuple[str, str | None, dict[int, bool], str | None]:
+    """Resolve eligibility and registration for team sync.
 
-    await update.message.reply_text("Проверяю ваши команды и доступ в командные комнаты...")
-
-    eligible, check_ok, _, memberships = await check_user_eligibility(username)
+    Returns (normalized_handle, person_name, memberships, error_code).
+    """
+    eligible, check_ok, person_name, memberships = await check_user_eligibility(handle)
 
     if not check_ok:
-        await update.message.reply_text(
-            "❌ Не удалось проверить данные регистрации. Попробуйте снова через пару минут."
-        )
-        return
+        return "", None, {}, "CHECK_FAILED"
 
     if not eligible:
-        await update.message.reply_text(
-            "❌ Ваш Telegram-аккаунт не найден в Участиях 2026."
-        )
-        return
+        return "", None, {}, "NOT_ELIGIBLE"
+
+    normalized_handle = normalize_telegram_handle(handle)
+    registration_status = await get_synapse_registration_status(normalized_handle)
+    if registration_status != "registered":
+        return normalized_handle, person_name, memberships, f"NOT_REGISTERED:{registration_status}"
 
     if not memberships:
-        await update.message.reply_text(
-            "ℹ️ Команды в Участиях 2026 для вас не найдены."
-        )
-        return
+        return normalized_handle, person_name, memberships, "NO_MEMBERSHIPS"
 
-    registration_status = await get_synapse_registration_status(username)
-    if registration_status != "registered":
-        await update.message.reply_text(
-            "ℹ️ Ваш аккаунт в чате пока не зарегистрирован. Сначала используйте /register, "
-            "после этого можно снова вызвать /my_teams."
-        )
-        return
+    return normalized_handle, person_name, memberships, None
 
-    team_results, failed_moderation_rooms = await sync_user_to_team_rooms_detailed(
-        username,
-        memberships,
-    )
 
+def split_team_sync_results(team_results: list[dict[str, object]]) -> tuple[list[str], list[str], list[str]]:
+    """Split per-team sync results into already joined, newly joined, failed lists."""
     already_joined = []
     newly_joined = []
     failed_team_rooms = []
@@ -896,17 +882,29 @@ async def my_teams(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         else:
             failed_team_rooms.append(team_name)
 
-    message_parts = ["✅ Проверил статус вашего участия в командах."]
+    return already_joined, newly_joined, failed_team_rooms
+
+
+def build_team_sync_message(
+    team_results: list[dict[str, object]],
+    failed_moderation_rooms: list[str],
+    title: str,
+    already_title: str,
+    newly_title: str,
+    header_lines: list[str] | None = None,
+) -> str:
+    """Build rich HTML message for team sync results."""
+    already_joined, newly_joined, failed_team_rooms = split_team_sync_results(team_results)
+
+    message_parts = [title]
+    if header_lines:
+        message_parts.append("\n\n" + "\n".join(header_lines))
 
     if already_joined:
-        message_parts.append(
-            "\n\nВы уже были в этих командных комнатах:\n\n" + "\n".join(already_joined)
-        )
+        message_parts.append("\n\n" + already_title + "\n\n" + "\n".join(already_joined))
 
     if newly_joined:
-        message_parts.append(
-            "\n\nВы были добавлены в эти комнаты:\n\n" + "\n".join(newly_joined)
-        )
+        message_parts.append("\n\n" + newly_title + "\n\n" + "\n".join(newly_joined))
 
     if failed_team_rooms:
         message_parts.append(
@@ -920,7 +918,56 @@ async def my_teams(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             + "."
         )
 
-    await update.message.reply_text("".join(message_parts), parse_mode=ParseMode.HTML)
+    return "".join(message_parts)
+
+
+async def my_teams(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Check caller participation and ensure membership in all team chats."""
+    user_id = update.effective_user.id
+    username = normalize_telegram_handle(update.effective_user.username) or str(user_id)
+
+    await update.message.reply_text("Проверяю ваши команды и доступ в командные комнаты...")
+
+    normalized_handle, _, memberships, error_code = await prepare_team_sync_target(username)
+
+    if error_code == "CHECK_FAILED":
+        await update.message.reply_text(
+            "❌ Не удалось проверить данные регистрации. Попробуйте снова через пару минут."
+        )
+        return
+
+    if error_code == "NOT_ELIGIBLE":
+        await update.message.reply_text(
+            "❌ Ваш Telegram-аккаунт не найден в Участиях 2026."
+        )
+        return
+
+    if error_code and error_code.startswith("NOT_REGISTERED:"):
+        await update.message.reply_text(
+            "ℹ️ Ваш аккаунт в чате пока не зарегистрирован. Сначала используйте /register, "
+            "после этого можно снова вызвать /my_teams."
+        )
+        return
+
+    if error_code == "NO_MEMBERSHIPS":
+        await update.message.reply_text(
+            "ℹ️ Команды в Участиях 2026 для вас не найдены."
+        )
+        return
+
+    team_results, failed_moderation_rooms = await sync_user_to_team_rooms_detailed(
+        normalized_handle,
+        memberships,
+    )
+    message = build_team_sync_message(
+        team_results,
+        failed_moderation_rooms,
+        title="✅ Проверил статус вашего участия в командах.",
+        already_title="Вы уже были в этих командных комнатах:",
+        newly_title="Вы были добавлены в эти комнаты:",
+    )
+
+    await update.message.reply_text(message, parse_mode=ParseMode.HTML)
 
 
 def is_admin_telegram_user(update: Update) -> bool:
@@ -1133,25 +1180,24 @@ async def ops_sync_teams(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     handle = context.args[0]
-    eligible, check_ok, person_name, memberships = await check_user_eligibility(handle)
+    normalized_handle, person_name, memberships, error_code = await prepare_team_sync_target(handle)
 
-    if not check_ok:
+    if error_code == "CHECK_FAILED":
         await update.message.reply_text("❌ Eligibility check failed")
         return
 
-    if not eligible:
+    if error_code == "NOT_ELIGIBLE":
         await update.message.reply_text(f"❌ Not eligible: {handle}")
         return
 
-    normalized_handle = normalize_telegram_handle(handle)
-    registration_status = await get_synapse_registration_status(normalized_handle)
-    if registration_status != "registered":
+    if error_code and error_code.startswith("NOT_REGISTERED:"):
+        registration_status = error_code.split(":", 1)[1]
         await update.message.reply_text(
             f"❌ {normalized_handle} is not registered in Matrix yet ({registration_status})."
         )
         return
 
-    if not memberships:
+    if error_code == "NO_MEMBERSHIPS":
         await update.message.reply_text(
             f"ℹ️ No team memberships found for @{normalized_handle}."
         )
@@ -1162,59 +1208,21 @@ async def ops_sync_teams(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         memberships,
     )
 
-    already_joined = []
-    newly_joined = []
-    failed_team_rooms = []
-
-    for result in team_results:
-        team_name = html.escape(str(result["team_name"]))
-        role = "организатор" if result["is_organizer"] else "участник"
-        room_id = result.get("room_id")
-        room_link = build_matrix_room_link(str(room_id)) if room_id else None
-        line = (
-            f"- <a href=\"{html.escape(room_link)}\">{team_name}</a> ({role})"
-            if room_link
-            else f"- {team_name} ({role})"
-        )
-
-        if result["status"] == "already_joined":
-            already_joined.append(line)
-        elif result["status"] == "joined":
-            newly_joined.append(line)
-        else:
-            failed_team_rooms.append(team_name)
-
     safe_handle = html.escape(normalized_handle)
     safe_name = html.escape(person_name or "-")
-    message_parts = [
-        "✅ Проверил статус участия в командах.\n\n",
-        f"Пользователь: @{safe_handle}\n",
-        f"Имя: {safe_name}",
-    ]
+    message = build_team_sync_message(
+        team_results,
+        failed_moderation_rooms,
+        title="✅ Проверил статус участия в командах.",
+        already_title="Уже был в этих командных комнатах:",
+        newly_title="Был добавлен в эти комнаты:",
+        header_lines=[
+            f"Пользователь: @{safe_handle}",
+            f"Имя: {safe_name}",
+        ],
+    )
 
-    if already_joined:
-        message_parts.append(
-            "\n\nУже был в этих командных комнатах:\n\n" + "\n".join(already_joined)
-        )
-
-    if newly_joined:
-        message_parts.append(
-            "\n\nБыл добавлен в эти комнаты:\n\n" + "\n".join(newly_joined)
-        )
-
-    if failed_team_rooms:
-        message_parts.append(
-            "\n\n⚠️ Не удалось добавить в комнаты: " + ", ".join(failed_team_rooms) + "."
-        )
-
-    if failed_moderation_rooms:
-        message_parts.append(
-            "\n⚠️ Не удалось выдать права администратора в комнатах: "
-            + ", ".join(failed_moderation_rooms)
-            + "."
-        )
-
-    await update.message.reply_text("".join(message_parts), parse_mode=ParseMode.HTML)
+    await update.message.reply_text(message, parse_mode=ParseMode.HTML)
 
 
 async def check_user_eligibility(telegram_handle: str) -> tuple[bool, bool, str | None, dict[int, bool]]:

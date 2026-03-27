@@ -439,8 +439,6 @@ def test_ops_sync_teams_reports_success(monkeypatch):
 
     bot.ADMIN_TELEGRAM_IDS.clear()
     bot.ADMIN_TELEGRAM_IDS.add(1)
-    bot.grist_team_id_to_name.clear()
-    bot.grist_team_id_to_name.update({2: "2026.GR(Организатор)", 5: "Медиа"})
 
     async def fake_check_user_eligibility(handle):
         assert handle == "@test_member"
@@ -450,14 +448,29 @@ def test_ops_sync_teams_reports_success(monkeypatch):
         assert username == "test_member"
         return "registered"
 
-    async def fake_join_user_to_team_rooms(username, memberships):
+    async def fake_sync_user_to_team_rooms_detailed(username, memberships):
         assert username == "test_member"
         assert memberships == {2: True, 5: False}
-        return True, [], []
+        return [
+            {
+                "team_id": 2,
+                "team_name": "2026.GR(Организатор)",
+                "is_organizer": True,
+                "room_id": "!team2:insomniafest.ru",
+                "status": "already_joined",
+            },
+            {
+                "team_id": 5,
+                "team_name": "Медиа",
+                "is_organizer": False,
+                "room_id": "!team5:insomniafest.ru",
+                "status": "joined",
+            },
+        ], []
 
     monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
     monkeypatch.setattr(bot, "get_synapse_registration_status", fake_get_synapse_registration_status)
-    monkeypatch.setattr(bot, "join_user_to_team_rooms", fake_join_user_to_team_rooms)
+    monkeypatch.setattr(bot, "sync_user_to_team_rooms_detailed", fake_sync_user_to_team_rooms_detailed)
 
     update = DummyUpdate(user_id=1, username="admin")
     context = DummyContext(args=["@test_member"])
@@ -466,10 +479,13 @@ def test_ops_sync_teams_reports_success(monkeypatch):
 
     assert update.message.sent
     text = update.message.sent[0]["text"]
-    assert "Team sync completed" in text
-    assert "handle=@test_member" in text
-    assert "team_join_ok=true" in text
-    assert "team#2=2026.GR(Организатор) (organizer)" in text
+    assert "Проверил статус участия в командах" in text
+    assert "Пользователь: @test_member" in text
+    assert "Имя: Test Person" in text
+    assert "Уже был в этих командных комнатах" in text
+    assert "Был добавлен в эти комнаты" in text
+    assert "2026.GR(Организатор)" in text
+    assert update.message.sent[0]["parse_mode"] == bot.ParseMode.HTML
 
 
 def test_ops_sync_teams_usage(monkeypatch):

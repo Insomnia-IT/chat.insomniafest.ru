@@ -434,6 +434,59 @@ def test_ops_register_reports_full_flow_results(monkeypatch):
     assert "failed_moderation_rooms=GR" in text
 
 
+def test_ops_sync_teams_reports_success(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.ADMIN_TELEGRAM_IDS.clear()
+    bot.ADMIN_TELEGRAM_IDS.add(1)
+    bot.grist_team_id_to_name.clear()
+    bot.grist_team_id_to_name.update({2: "2026.GR(Организатор)", 5: "Медиа"})
+
+    async def fake_check_user_eligibility(handle):
+        assert handle == "@test_member"
+        return True, True, "Test Person", {2: True, 5: False}
+
+    async def fake_get_synapse_registration_status(username):
+        assert username == "test_member"
+        return "registered"
+
+    async def fake_join_user_to_team_rooms(username, memberships):
+        assert username == "test_member"
+        assert memberships == {2: True, 5: False}
+        return True, [], []
+
+    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
+    monkeypatch.setattr(bot, "get_synapse_registration_status", fake_get_synapse_registration_status)
+    monkeypatch.setattr(bot, "join_user_to_team_rooms", fake_join_user_to_team_rooms)
+
+    update = DummyUpdate(user_id=1, username="admin")
+    context = DummyContext(args=["@test_member"])
+
+    asyncio.run(bot.ops_sync_teams(update, context))
+
+    assert update.message.sent
+    text = update.message.sent[0]["text"]
+    assert "Team sync completed" in text
+    assert "handle=@test_member" in text
+    assert "team_join_ok=true" in text
+    assert "team#2=2026.GR(Организатор) (organizer)" in text
+
+
+def test_ops_sync_teams_usage(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.ADMIN_TELEGRAM_IDS.clear()
+    bot.ADMIN_TELEGRAM_IDS.add(1)
+
+    update = DummyUpdate(user_id=1, username="admin")
+    context = DummyContext(args=[])
+
+    asyncio.run(bot.ops_sync_teams(update, context))
+
+    assert update.message.sent
+    assert "Usage: /hr_sync_teams" in update.message.sent[0]["text"]
+
+
 def test_sync_grist_cache_handles_real_grist_schema(monkeypatch):
     bot = load_bot_module(monkeypatch)
 
@@ -918,6 +971,79 @@ def test_start_command(monkeypatch):
 
     asyncio.run(bot.start(update, context))
 
+
+def test_my_teams_success(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.grist_team_id_to_name.clear()
+    bot.grist_team_id_to_name.update({2: "2026.GR(Организатор)", 5: "Медиа"})
+
+    async def fake_check_user_eligibility(handle):
+        assert handle == "alice"
+        return True, True, "Alice", {2: True, 5: False}
+
+    async def fake_get_synapse_registration_status(username):
+        assert username == "alice"
+        return "registered"
+
+    async def fake_join_user_to_team_rooms(username, memberships):
+        assert username == "alice"
+        assert memberships == {2: True, 5: False}
+        return True, [], []
+
+    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
+    monkeypatch.setattr(bot, "get_synapse_registration_status", fake_get_synapse_registration_status)
+    monkeypatch.setattr(bot, "join_user_to_team_rooms", fake_join_user_to_team_rooms)
+
+    update = DummyUpdate(user_id=10, username="alice")
+    context = DummyContext()
+
+    asyncio.run(bot.my_teams(update, context))
+
+    assert len(update.message.sent) == 2
+    assert "Проверяю ваши команды" in update.message.sent[0]["text"]
+    assert "Проверка команд завершена" in update.message.sent[1]["text"]
+    assert "2026.GR(Организатор)" in update.message.sent[1]["text"]
+    assert "Вы добавлены в командные комнаты" in update.message.sent[1]["text"]
+
+
+def test_my_teams_requires_registration(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    async def fake_check_user_eligibility(handle):
+        return True, True, "Alice", {2: True}
+
+    async def fake_get_synapse_registration_status(username):
+        return "not_registered"
+
+    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
+    monkeypatch.setattr(bot, "get_synapse_registration_status", fake_get_synapse_registration_status)
+
+    update = DummyUpdate(user_id=10, username="alice")
+    context = DummyContext()
+
+    asyncio.run(bot.my_teams(update, context))
+
+    assert len(update.message.sent) == 2
+    assert "сначала используйте /register" in update.message.sent[1]["text"].lower()
+
+
+def test_help_command_mentions_my_teams(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    async def fake_is_hr_command_user(update):
+        return False
+
+    monkeypatch.setattr(bot, "is_hr_command_user", fake_is_hr_command_user)
+
+    update = DummyUpdate(user_id=10, username="alice")
+    context = DummyContext()
+
+    asyncio.run(bot.help_command(update, context))
+
+    assert update.message.sent
+    assert "/my_teams" in update.message.sent[0]["text"]
+
     assert len(update.message.sent) == 1
     assert "/register" in update.message.sent[0]["text"]
 
@@ -936,6 +1062,23 @@ def test_help_command(monkeypatch):
     assert "/reset_password" in update.message.sent[0]["text"]
     assert "Команды владельца" not in update.message.sent[0]["text"]
     assert update.message.sent[0]["parse_mode"] is None
+
+
+def test_help_command_hr_mentions_hr_sync_teams(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    async def fake_is_hr_command_user(update):
+        return True
+
+    monkeypatch.setattr(bot, "is_hr_command_user", fake_is_hr_command_user)
+
+    update = DummyUpdate(user_id=10, username="hr_user")
+    context = DummyContext()
+
+    asyncio.run(bot.help_command(update, context))
+
+    assert update.message.sent
+    assert "/hr_sync_teams" in update.message.sent[0]["text"]
 
 
 def test_reset_password_rate_limited(monkeypatch):

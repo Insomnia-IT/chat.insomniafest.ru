@@ -815,6 +815,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "📖 Помощь и документация\n\n"
         f"Вкратце о Бессонном Чате: {HELP_URL}\n\n"
         "/register - создать аккаунт в Matrix.\n"
+        "/my_teams - проверить ваши команды и добавиться в командные комнаты.\n"
         "/reset_password - сбросить пароль существующего аккаунта.\n\n"
         "Если возникнут вопросы или проблемы, обратитесь к своему HR или напишите в Общий Чат https://chat.insomniafest.ru/#/room/#general:insomniafest.ru."
     )
@@ -826,8 +827,79 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "(Все данные бот берет из таблицы Участия 2026 в Гристе)\n\n"
             "/hr_sync - принудительно обновить кэш Грист и показать счетчики (полезно сделать если человек был только что добавлен в Участия 2026).\n"
             "/hr_check @handle - проверить есть ли человек в Участиях 2026 и членство в командах.\n"
-            "/hr_register @handle - выполнить полную регистрацию: аккаунт в чате и автодобавление в комнаты."
+            "/hr_register @handle - выполнить полную регистрацию: аккаунт в чате и автодобавление в комнаты.\n"
+            "/hr_sync_teams @handle - перепроверить команды участника и добавить в командные комнаты (создаст комнаты при необходимости)."
         )
+
+    await update.message.reply_text(message)
+
+
+async def my_teams(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Check caller participation and ensure membership in all team chats."""
+    user_id = update.effective_user.id
+    username = normalize_telegram_handle(update.effective_user.username) or str(user_id)
+
+    await update.message.reply_text("Проверяю ваши команды и доступ в командные комнаты...")
+
+    eligible, check_ok, _, memberships = await check_user_eligibility(username)
+
+    if not check_ok:
+        await update.message.reply_text(
+            "❌ Не удалось проверить данные регистрации. Попробуйте снова через пару минут."
+        )
+        return
+
+    if not eligible:
+        await update.message.reply_text(
+            "❌ Ваш Telegram-аккаунт не найден в Участиях 2026."
+        )
+        return
+
+    if not memberships:
+        await update.message.reply_text(
+            "ℹ️ Команды в Участиях 2026 для вас не найдены."
+        )
+        return
+
+    registration_status = await get_synapse_registration_status(username)
+    if registration_status != "registered":
+        await update.message.reply_text(
+            "ℹ️ Ваш аккаунт в чате пока не зарегистрирован. Сначала используйте /register, "
+            "после этого можно снова вызвать /my_teams."
+        )
+        return
+
+    team_join_ok, failed_team_rooms, failed_moderation_rooms = await join_user_to_team_rooms(
+        username,
+        memberships,
+    )
+
+    team_lines = []
+    for team_id, is_organizer in sorted(memberships.items()):
+        role = "организатор" if is_organizer else "участник"
+        team_lines.append(f"• {get_team_name(team_id)} ({role})")
+
+    teams_text = "\n".join(team_lines)
+
+    message = (
+        "✅ Проверка команд завершена.\n\n"
+        "Ваши команды:\n"
+        f"{teams_text}"
+    )
+
+    if team_join_ok and not failed_moderation_rooms:
+        message += "\n\nВы добавлены в командные комнаты."
+    else:
+        if failed_team_rooms:
+            message += (
+                "\n\n⚠️ Не удалось добавить в комнаты: "
+                f"{', '.join(failed_team_rooms)}."
+            )
+        if failed_moderation_rooms:
+            message += (
+                "\n⚠️ Не удалось выдать права администратора в комнатах: "
+                f"{', '.join(failed_moderation_rooms)}."
+            )
 
     await update.message.reply_text(message)
 
@@ -1022,6 +1094,65 @@ async def ops_register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     if failed_rooms:
         lines.append(f"failed_rooms={', '.join(failed_rooms)}")
+
+    if failed_team_rooms:
+        lines.append(f"failed_team_rooms={', '.join(failed_team_rooms)}")
+
+    if failed_moderation_rooms:
+        lines.append(f"failed_moderation_rooms={', '.join(failed_moderation_rooms)}")
+
+    await update.message.reply_text("\n".join(lines))
+
+
+async def ops_sync_teams(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Sync team room membership for a provided Telegram handle. Hidden HR-only command."""
+    if not await require_hr(update):
+        return
+
+    if not context.args:
+        await update.message.reply_text("Usage: /hr_sync_teams <telegram_handle>")
+        return
+
+    handle = context.args[0]
+    eligible, check_ok, person_name, memberships = await check_user_eligibility(handle)
+
+    if not check_ok:
+        await update.message.reply_text("❌ Eligibility check failed")
+        return
+
+    if not eligible:
+        await update.message.reply_text(f"❌ Not eligible: {handle}")
+        return
+
+    normalized_handle = normalize_telegram_handle(handle)
+    registration_status = await get_synapse_registration_status(normalized_handle)
+    if registration_status != "registered":
+        await update.message.reply_text(
+            f"❌ {normalized_handle} is not registered in Matrix yet ({registration_status})."
+        )
+        return
+
+    if not memberships:
+        await update.message.reply_text(
+            f"ℹ️ No team memberships found for @{normalized_handle}."
+        )
+        return
+
+    team_join_ok, failed_team_rooms, failed_moderation_rooms = await join_user_to_team_rooms(
+        normalized_handle,
+        memberships,
+    )
+
+    lines = [
+        "✅ Team sync completed",
+        f"handle=@{normalized_handle}",
+        f"name={person_name or '-'}",
+        f"team_join_ok={str(team_join_ok).lower()}",
+    ]
+
+    for team_id, is_org in sorted(memberships.items()):
+        role = "organizer" if is_org else "member"
+        lines.append(f"team#{team_id}={get_team_name(team_id)} ({role})")
 
     if failed_team_rooms:
         lines.append(f"failed_team_rooms={', '.join(failed_team_rooms)}")
@@ -1585,11 +1716,13 @@ def main() -> None:
     # Add command handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("register", register))
+    application.add_handler(CommandHandler("my_teams", my_teams))
     application.add_handler(CommandHandler("reset_password", reset_password))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("hr_sync", ops_sync))
     application.add_handler(CommandHandler("hr_check", ops_check))
     application.add_handler(CommandHandler("hr_register", ops_register))
+    application.add_handler(CommandHandler("hr_sync_teams", ops_sync_teams))
     application.add_error_handler(error_handler)
 
     # Run the bot

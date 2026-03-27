@@ -905,6 +905,24 @@ def test_join_user_to_rooms_partial_failure(monkeypatch):
     assert failed == ["room2"]
 
 
+def test_join_user_to_rooms_already_joined_is_success(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    monkeypatch.setattr(bot, "SYNAPSE_ADMIN_ACCESS_TOKEN", "token")
+
+    async def fake_request_with_retries(client, method, url, **kwargs):
+        return FakeResponse(
+            403,
+            {"errcode": "M_FORBIDDEN", "error": "@alice:insomniafest.ru is already in the room."},
+            text='{"errcode":"M_FORBIDDEN","error":"@alice:insomniafest.ru is already in the room."}',
+        )
+
+    monkeypatch.setattr(bot, "request_with_retries", fake_request_with_retries)
+
+    ok, failed = asyncio.run(bot.join_user_to_rooms("alice", ["!room:insomniafest.ru"]))
+    assert ok is True
+    assert failed == []
+
+
 def test_resolve_room_alias_no_token(monkeypatch):
     bot = load_bot_module(monkeypatch)
     monkeypatch.setattr(bot, "SYNAPSE_ADMIN_ACCESS_TOKEN", None)

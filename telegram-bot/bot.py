@@ -815,7 +815,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "📖 Помощь и документация\n\n"
         f"Вкратце о Бессонном Чате: {HELP_URL}\n\n"
         "/register - создать аккаунт в Matrix.\n"
-        "/my_teams - проверить ваши команды и добавиться в командные комнаты.\n"
+        "/my_teams - добавиться в командные комнаты.\n"
         "/reset_password - сбросить пароль существующего аккаунта.\n\n"
         "Если возникнут вопросы или проблемы, обратитесь к своему HR или напишите в Общий Чат https://chat.insomniafest.ru/#/room/#general:insomniafest.ru."
     )
@@ -1695,6 +1695,17 @@ async def join_user_to_rooms(username: str, room_aliases: list[str] | tuple[str,
                     headers=headers,
                     json={"user_id": user_id},
                 )
+
+                if response.status_code == 403:
+                    try:
+                        error_payload = response.json()
+                    except Exception:
+                        error_payload = {}
+
+                    error_text = str(error_payload.get("error") or response.text or "")
+                    if "already in the room" in error_text.lower():
+                        logger.info(f"{user_id} is already in {room}; treating join as successful")
+                        continue
 
                 if response.status_code not in (200, 201):
                     failed_rooms.append(room)

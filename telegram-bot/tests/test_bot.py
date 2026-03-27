@@ -568,7 +568,8 @@ def test_join_user_to_team_rooms_sets_moderator_only_for_organizers(monkeypatch)
     bot = load_bot_module(monkeypatch)
 
     ensured = []
-    joined = []
+    joined_spaces = []
+    joined_rooms = []
     moderator = []
 
     async def fake_ensure_team_room(team_id, team_name):
@@ -581,8 +582,12 @@ def test_join_user_to_team_rooms_sets_moderator_only_for_organizers(monkeypatch)
         return []
 
     async def fake_join_user_to_rooms(username, rooms):
-        joined.append((username, tuple(rooms)))
+        joined_spaces.append((username, tuple(rooms)))
         return True, []
+
+    async def fake_join_user_to_room(username, room_alias_or_id):
+        joined_rooms.append((username, room_alias_or_id))
+        return "joined"
 
     async def fake_set_room_moderator(room_id, user_id):
         moderator.append((room_id, user_id))
@@ -591,6 +596,7 @@ def test_join_user_to_team_rooms_sets_moderator_only_for_organizers(monkeypatch)
     monkeypatch.setattr(bot, "ensure_team_room", fake_ensure_team_room)
     monkeypatch.setattr(bot, "get_room_parent_spaces", fake_get_room_parent_spaces)
     monkeypatch.setattr(bot, "join_user_to_rooms", fake_join_user_to_rooms)
+    monkeypatch.setattr(bot, "join_user_to_room", fake_join_user_to_room)
     monkeypatch.setattr(bot, "set_room_moderator", fake_set_room_moderator)
 
     bot.grist_team_id_to_name.clear()
@@ -604,10 +610,11 @@ def test_join_user_to_team_rooms_sets_moderator_only_for_organizers(monkeypatch)
     assert failed_team_rooms == []
     assert failed_moderation_rooms == []
     assert len(ensured) == 2
-    assert len(joined) == 3
-    assert joined[0] == ("alice", ("!space72:insomniafest.ru",))
-    assert joined[1] == ("alice", ("!room72:insomniafest.ru",))
-    assert joined[2] == ("alice", ("!room73:insomniafest.ru",))
+    assert joined_spaces == [("alice", ("!space72:insomniafest.ru",))]
+    assert joined_rooms == [
+        ("alice", "!room72:insomniafest.ru"),
+        ("alice", "!room73:insomniafest.ru"),
+    ]
     assert len(moderator) == 1
     assert moderator[0][0] == "!room72:insomniafest.ru"
 
@@ -626,12 +633,16 @@ def test_join_user_to_team_rooms_collects_failed_rooms(monkeypatch):
     async def fake_join_user_to_rooms(username, rooms):
         return True, []
 
+    async def fake_join_user_to_room(username, room_alias_or_id):
+        return "joined"
+
     async def fake_set_room_moderator(room_id, user_id):
         return True
 
     monkeypatch.setattr(bot, "ensure_team_room", fake_ensure_team_room)
     monkeypatch.setattr(bot, "get_room_parent_spaces", fake_get_room_parent_spaces)
     monkeypatch.setattr(bot, "join_user_to_rooms", fake_join_user_to_rooms)
+    monkeypatch.setattr(bot, "join_user_to_room", fake_join_user_to_room)
     monkeypatch.setattr(bot, "set_room_moderator", fake_set_room_moderator)
 
     bot.grist_team_id_to_name.clear()
@@ -937,6 +948,23 @@ def test_join_user_to_rooms_already_joined_is_success(monkeypatch):
     ok, failed = asyncio.run(bot.join_user_to_rooms("alice", ["!room:insomniafest.ru"]))
     assert ok is True
     assert failed == []
+
+
+def test_join_user_to_room_reports_already_joined(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    monkeypatch.setattr(bot, "SYNAPSE_ADMIN_ACCESS_TOKEN", "token")
+
+    async def fake_request_with_retries(client, method, url, **kwargs):
+        return FakeResponse(
+            403,
+            {"errcode": "M_FORBIDDEN", "error": "@alice:insomniafest.ru is already in the room."},
+            text='{"errcode":"M_FORBIDDEN","error":"@alice:insomniafest.ru is already in the room."}',
+        )
+
+    monkeypatch.setattr(bot, "request_with_retries", fake_request_with_retries)
+
+    status = asyncio.run(bot.join_user_to_room("alice", "!room:insomniafest.ru"))
+    assert status == "already_joined"
 
 
 def test_resolve_room_alias_no_token(monkeypatch):

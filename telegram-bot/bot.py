@@ -1688,14 +1688,48 @@ async def get_room_parent_spaces(room_id: str) -> list[str]:
 
 async def join_user_to_room(username: str, room_alias_or_id: str) -> str:
     """Join a local user to a room and return joined/already_joined/failed."""
-    ok, failed_rooms = await join_user_to_rooms(username, [room_alias_or_id])
-    if ok:
+    if not SYNAPSE_ADMIN_ACCESS_TOKEN:
+        logger.info("SYNAPSE_ADMIN_ACCESS_TOKEN is not set; auto-join via bot skipped (Synapse may handle it)")
         return "joined"
 
-    if failed_rooms:
+    user_id = to_mxid(username)
+    headers = {
+        "Authorization": f"Bearer {SYNAPSE_ADMIN_ACCESS_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    room_id_or_alias = quote(room_alias_or_id, safe='')
+
+    try:
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+            response = await request_with_retries(
+                client,
+                "POST",
+                f"{SYNAPSE_API_URL}/_synapse/admin/v1/join/{room_id_or_alias}",
+                headers=headers,
+                json={"user_id": user_id},
+            )
+    except Exception as e:
+        logger.error(f"Auto-join request failed for {user_id} to {room_alias_or_id}: {e}")
         return "failed"
 
-    return "already_joined"
+    if response.status_code in (200, 201):
+        return "joined"
+
+    if response.status_code == 403:
+        try:
+            error_payload = response.json()
+        except Exception:
+            error_payload = {}
+
+        error_text = str(error_payload.get("error") or response.text or "")
+        if "already in the room" in error_text.lower():
+            logger.info(f"{user_id} is already in {room_alias_or_id}; treating join as successful")
+            return "already_joined"
+
+    logger.warning(
+        f"Failed to auto-join {user_id} to {room_alias_or_id}: {response.status_code} {response.text}"
+    )
+    return "failed"
 
 
 async def sync_user_to_team_rooms_detailed(username: str, team_memberships: dict[int, bool]) -> tuple[list[dict[str, object]], list[str]]:
@@ -1776,50 +1810,12 @@ async def join_user_to_rooms(username: str, room_aliases: list[str] | tuple[str,
     if not room_aliases:
         return True, []
 
-    if not SYNAPSE_ADMIN_ACCESS_TOKEN:
-        logger.info("SYNAPSE_ADMIN_ACCESS_TOKEN is not set; auto-join via bot skipped (Synapse may handle it)")
-        return True, []
-
-    user_id = to_mxid(username)
-    headers = {
-        "Authorization": f"Bearer {SYNAPSE_ADMIN_ACCESS_TOKEN}",
-        "Content-Type": "application/json",
-    }
-
     failed_rooms = []
 
-    try:
-        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
-            for room in room_aliases:
-                room_id_or_alias = quote(room, safe='')
-                response = await request_with_retries(
-                    client,
-                    "POST",
-                    f"{SYNAPSE_API_URL}/_synapse/admin/v1/join/{room_id_or_alias}",
-                    headers=headers,
-                    json={"user_id": user_id},
-                )
-
-                if response.status_code == 403:
-                    try:
-                        error_payload = response.json()
-                    except Exception:
-                        error_payload = {}
-
-                    error_text = str(error_payload.get("error") or response.text or "")
-                    if "already in the room" in error_text.lower():
-                        logger.info(f"{user_id} is already in {room}; treating join as successful")
-                        continue
-
-                if response.status_code not in (200, 201):
-                    failed_rooms.append(room)
-                    logger.warning(
-                        f"Failed to auto-join {user_id} to {room}: {response.status_code} {response.text}"
-                    )
-
-    except Exception as e:
-        logger.error(f"Auto-join request failed for {user_id}: {e}")
-        return False, list(room_aliases)
+    for room in room_aliases:
+        join_status = await join_user_to_room(username, room)
+        if join_status == "failed":
+            failed_rooms.append(room)
 
     return len(failed_rooms) == 0, failed_rooms
 

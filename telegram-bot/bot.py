@@ -869,39 +869,58 @@ async def my_teams(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
-    team_join_ok, failed_team_rooms, failed_moderation_rooms = await join_user_to_team_rooms(
+    team_results, failed_moderation_rooms = await sync_user_to_team_rooms_detailed(
         username,
         memberships,
     )
 
-    team_lines = []
-    for team_id, is_organizer in sorted(memberships.items()):
-        role = "организатор" if is_organizer else "участник"
-        team_lines.append(f"• {get_team_name(team_id)} ({role})")
+    already_joined = []
+    newly_joined = []
+    failed_team_rooms = []
 
-    teams_text = "\n".join(team_lines)
+    for result in team_results:
+        team_name = html.escape(str(result["team_name"]))
+        role = "организатор" if result["is_organizer"] else "участник"
+        room_id = result.get("room_id")
+        room_link = build_matrix_room_link(str(room_id)) if room_id else None
+        line = (
+            f"- <a href=\"{html.escape(room_link)}\">{team_name}</a> ({role})"
+            if room_link
+            else f"- {team_name} ({role})"
+        )
 
-    message = (
-        "✅ Проверка команд завершена.\n\n"
-        "Ваши команды:\n"
-        f"{teams_text}"
-    )
+        if result["status"] == "already_joined":
+            already_joined.append(line)
+        elif result["status"] == "joined":
+            newly_joined.append(line)
+        else:
+            failed_team_rooms.append(team_name)
 
-    if team_join_ok and not failed_moderation_rooms:
-        message += "\n\nВы добавлены в командные комнаты."
-    else:
-        if failed_team_rooms:
-            message += (
-                "\n\n⚠️ Не удалось добавить в комнаты: "
-                f"{', '.join(failed_team_rooms)}."
-            )
-        if failed_moderation_rooms:
-            message += (
-                "\n⚠️ Не удалось выдать права администратора в комнатах: "
-                f"{', '.join(failed_moderation_rooms)}."
-            )
+    message_parts = ["✅ Проверил статус вашего участия в командах."]
 
-    await update.message.reply_text(message)
+    if already_joined:
+        message_parts.append(
+            "\n\nВы уже были в этих командных комнатах:\n\n" + "\n".join(already_joined)
+        )
+
+    if newly_joined:
+        message_parts.append(
+            "\n\nВы были добавлены в эти комнаты:\n\n" + "\n".join(newly_joined)
+        )
+
+    if failed_team_rooms:
+        message_parts.append(
+            "\n\n⚠️ Не удалось добавить в комнаты: " + ", ".join(failed_team_rooms) + "."
+        )
+
+    if failed_moderation_rooms:
+        message_parts.append(
+            "\n⚠️ Не удалось выдать права администратора в комнатах: "
+            + ", ".join(failed_moderation_rooms)
+            + "."
+        )
+
+    await update.message.reply_text("".join(message_parts), parse_mode=ParseMode.HTML)
 
 
 def is_admin_telegram_user(update: Update) -> bool:
@@ -1138,29 +1157,64 @@ async def ops_sync_teams(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return
 
-    team_join_ok, failed_team_rooms, failed_moderation_rooms = await join_user_to_team_rooms(
+    team_results, failed_moderation_rooms = await sync_user_to_team_rooms_detailed(
         normalized_handle,
         memberships,
     )
 
-    lines = [
-        "✅ Team sync completed",
-        f"handle=@{normalized_handle}",
-        f"name={person_name or '-'}",
-        f"team_join_ok={str(team_join_ok).lower()}",
+    already_joined = []
+    newly_joined = []
+    failed_team_rooms = []
+
+    for result in team_results:
+        team_name = html.escape(str(result["team_name"]))
+        role = "организатор" if result["is_organizer"] else "участник"
+        room_id = result.get("room_id")
+        room_link = build_matrix_room_link(str(room_id)) if room_id else None
+        line = (
+            f"- <a href=\"{html.escape(room_link)}\">{team_name}</a> ({role})"
+            if room_link
+            else f"- {team_name} ({role})"
+        )
+
+        if result["status"] == "already_joined":
+            already_joined.append(line)
+        elif result["status"] == "joined":
+            newly_joined.append(line)
+        else:
+            failed_team_rooms.append(team_name)
+
+    safe_handle = html.escape(normalized_handle)
+    safe_name = html.escape(person_name or "-")
+    message_parts = [
+        "✅ Проверил статус участия в командах.\n\n",
+        f"Пользователь: @{safe_handle}\n",
+        f"Имя: {safe_name}",
     ]
 
-    for team_id, is_org in sorted(memberships.items()):
-        role = "organizer" if is_org else "member"
-        lines.append(f"team#{team_id}={get_team_name(team_id)} ({role})")
+    if already_joined:
+        message_parts.append(
+            "\n\nУже был в этих командных комнатах:\n\n" + "\n".join(already_joined)
+        )
+
+    if newly_joined:
+        message_parts.append(
+            "\n\nБыл добавлен в эти комнаты:\n\n" + "\n".join(newly_joined)
+        )
 
     if failed_team_rooms:
-        lines.append(f"failed_team_rooms={', '.join(failed_team_rooms)}")
+        message_parts.append(
+            "\n\n⚠️ Не удалось добавить в комнаты: " + ", ".join(failed_team_rooms) + "."
+        )
 
     if failed_moderation_rooms:
-        lines.append(f"failed_moderation_rooms={', '.join(failed_moderation_rooms)}")
+        message_parts.append(
+            "\n⚠️ Не удалось выдать права администратора в комнатах: "
+            + ", ".join(failed_moderation_rooms)
+            + "."
+        )
 
-    await update.message.reply_text("\n".join(lines))
+    await update.message.reply_text("".join(message_parts), parse_mode=ParseMode.HTML)
 
 
 async def check_user_eligibility(telegram_handle: str) -> tuple[bool, bool, str | None, dict[int, bool]]:
@@ -1442,6 +1496,11 @@ def get_team_name(team_id: int) -> str:
     return f"Команда {team_id}"
 
 
+def build_matrix_room_link(room_id: str) -> str:
+    """Build a web link to a Matrix room in Element."""
+    return f"{ELEMENT_URL}/#/room/{quote(room_id, safe='')}"
+
+
 def build_team_room_alias(team_id: int) -> str:
     """Build deterministic alias for a team room."""
     return f"#team-{team_id}:{SYNAPSE_SERVER_NAME}"
@@ -1627,12 +1686,24 @@ async def get_room_parent_spaces(room_id: str) -> list[str]:
         return []
 
 
-async def join_user_to_team_rooms(username: str, team_memberships: dict[int, bool]) -> tuple[bool, list[str], list[str]]:
-    """Join user to all team rooms, creating them if needed, and grant organizer moderation."""
-    if not team_memberships:
-        return True, [], []
+async def join_user_to_room(username: str, room_alias_or_id: str) -> str:
+    """Join a local user to a room and return joined/already_joined/failed."""
+    ok, failed_rooms = await join_user_to_rooms(username, [room_alias_or_id])
+    if ok:
+        return "joined"
 
-    failed_team_rooms = []
+    if failed_rooms:
+        return "failed"
+
+    return "already_joined"
+
+
+async def sync_user_to_team_rooms_detailed(username: str, team_memberships: dict[int, bool]) -> tuple[list[dict[str, object]], list[str]]:
+    """Ensure team rooms exist and return per-team sync details plus moderation failures."""
+    if not team_memberships:
+        return [], []
+
+    results = []
     failed_moderation_rooms = []
     user_id = to_mxid(username)
 
@@ -1640,7 +1711,15 @@ async def join_user_to_team_rooms(username: str, team_memberships: dict[int, boo
         team_name = get_team_name(team_id)
         room_id = await ensure_team_room(team_id, team_name)
         if not room_id:
-            failed_team_rooms.append(team_name)
+            results.append(
+                {
+                    "team_id": team_id,
+                    "team_name": team_name,
+                    "is_organizer": is_organizer,
+                    "room_id": None,
+                    "status": "failed",
+                }
+            )
             continue
 
         parent_space_ids = await get_room_parent_spaces(room_id)
@@ -1654,9 +1733,17 @@ async def join_user_to_team_rooms(username: str, team_memberships: dict[int, boo
                     ", ".join(failed_spaces),
                 )
 
-        joined, failed_rooms = await join_user_to_rooms(username, [room_id])
-        if not joined or failed_rooms:
-            failed_team_rooms.append(team_name)
+        join_status = await join_user_to_room(username, room_id)
+        if join_status == "failed":
+            results.append(
+                {
+                    "team_id": team_id,
+                    "team_name": team_name,
+                    "is_organizer": is_organizer,
+                    "room_id": room_id,
+                    "status": "failed",
+                }
+            )
             continue
 
         if is_organizer:
@@ -1664,6 +1751,23 @@ async def join_user_to_team_rooms(username: str, team_memberships: dict[int, boo
             if not moderator_ok:
                 failed_moderation_rooms.append(team_name)
 
+        results.append(
+            {
+                "team_id": team_id,
+                "team_name": team_name,
+                "is_organizer": is_organizer,
+                "room_id": room_id,
+                "status": join_status,
+            }
+        )
+
+    return results, failed_moderation_rooms
+
+
+async def join_user_to_team_rooms(username: str, team_memberships: dict[int, bool]) -> tuple[bool, list[str], list[str]]:
+    """Join user to all team rooms, creating them if needed, and grant organizer moderation."""
+    results, failed_moderation_rooms = await sync_user_to_team_rooms_detailed(username, team_memberships)
+    failed_team_rooms = [result["team_name"] for result in results if result["status"] == "failed"]
     return len(failed_team_rooms) == 0, failed_team_rooms, failed_moderation_rooms
 
 

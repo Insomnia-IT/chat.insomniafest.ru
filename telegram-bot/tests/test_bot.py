@@ -993,9 +993,6 @@ def test_start_command(monkeypatch):
 def test_my_teams_success(monkeypatch):
     bot = load_bot_module(monkeypatch)
 
-    bot.grist_team_id_to_name.clear()
-    bot.grist_team_id_to_name.update({2: "2026.GR(Организатор)", 5: "Медиа"})
-
     async def fake_check_user_eligibility(handle):
         assert handle == "alice"
         return True, True, "Alice", {2: True, 5: False}
@@ -1004,14 +1001,29 @@ def test_my_teams_success(monkeypatch):
         assert username == "alice"
         return "registered"
 
-    async def fake_join_user_to_team_rooms(username, memberships):
+    async def fake_sync_user_to_team_rooms_detailed(username, memberships):
         assert username == "alice"
         assert memberships == {2: True, 5: False}
-        return True, [], []
+        return [
+            {
+                "team_id": 2,
+                "team_name": "2026.GR(Организатор)",
+                "is_organizer": True,
+                "room_id": "!team2:insomniafest.ru",
+                "status": "already_joined",
+            },
+            {
+                "team_id": 5,
+                "team_name": "Медиа",
+                "is_organizer": False,
+                "room_id": "!team5:insomniafest.ru",
+                "status": "joined",
+            },
+        ], []
 
     monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
     monkeypatch.setattr(bot, "get_synapse_registration_status", fake_get_synapse_registration_status)
-    monkeypatch.setattr(bot, "join_user_to_team_rooms", fake_join_user_to_team_rooms)
+    monkeypatch.setattr(bot, "sync_user_to_team_rooms_detailed", fake_sync_user_to_team_rooms_detailed)
 
     update = DummyUpdate(user_id=10, username="alice")
     context = DummyContext()
@@ -1020,9 +1032,11 @@ def test_my_teams_success(monkeypatch):
 
     assert len(update.message.sent) == 2
     assert "Проверяю ваши команды" in update.message.sent[0]["text"]
-    assert "Проверка команд завершена" in update.message.sent[1]["text"]
+    assert "Проверил статус вашего участия в командах" in update.message.sent[1]["text"]
     assert "2026.GR(Организатор)" in update.message.sent[1]["text"]
-    assert "Вы добавлены в командные комнаты" in update.message.sent[1]["text"]
+    assert "Вы уже были в этих командных комнатах" in update.message.sent[1]["text"]
+    assert "Вы были добавлены в эти комнаты" in update.message.sent[1]["text"]
+    assert update.message.sent[1]["parse_mode"] == bot.ParseMode.HTML
 
 
 def test_my_teams_requires_registration(monkeypatch):
@@ -1062,8 +1076,37 @@ def test_help_command_mentions_my_teams(monkeypatch):
     assert update.message.sent
     assert "/my_teams" in update.message.sent[0]["text"]
 
-    assert len(update.message.sent) == 1
-    assert "/register" in update.message.sent[0]["text"]
+
+def test_sync_user_to_team_rooms_detailed_reports_already_joined(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    async def fake_ensure_team_room(team_id, team_name):
+        return "!room72:insomniafest.ru"
+
+    async def fake_get_room_parent_spaces(room_id):
+        return []
+
+    async def fake_join_user_to_room(username, room_alias_or_id):
+        assert username == "alice"
+        assert room_alias_or_id == "!room72:insomniafest.ru"
+        return "already_joined"
+
+    async def fake_set_room_moderator(room_id, user_id):
+        return True
+
+    monkeypatch.setattr(bot, "ensure_team_room", fake_ensure_team_room)
+    monkeypatch.setattr(bot, "get_room_parent_spaces", fake_get_room_parent_spaces)
+    monkeypatch.setattr(bot, "join_user_to_room", fake_join_user_to_room)
+    monkeypatch.setattr(bot, "set_room_moderator", fake_set_room_moderator)
+
+    results, failed_moderation_rooms = asyncio.run(
+        bot.sync_user_to_team_rooms_detailed("alice", {72: True})
+    )
+
+    assert failed_moderation_rooms == []
+    assert len(results) == 1
+    assert results[0]["status"] == "already_joined"
+    assert results[0]["room_id"] == "!room72:insomniafest.ru"
 
 
 def test_help_command(monkeypatch):

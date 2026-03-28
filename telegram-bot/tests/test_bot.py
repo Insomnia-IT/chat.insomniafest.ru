@@ -45,6 +45,12 @@ class DummyUpdate:
         self.effective_chat = DummyChat(chat_id=chat_id)
 
 
+def make_text_update(user_id=1, username="alice", text=""):
+    update = DummyUpdate(user_id=user_id, username=username)
+    update.message.text = text
+    return update
+
+
 class DummyBot:
     def __init__(self):
         self.sent = []
@@ -277,6 +283,51 @@ def test_update_grist_people_matrix_id_missing_person_row(monkeypatch):
     assert code == "PERSON_ROW_ID_MISSING"
 
 
+def test_get_person_matrix_id_by_row_id_cache_hit(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.grist_person_row_to_matrix_id.clear()
+    bot.grist_person_row_to_matrix_id[42] = "@existing:insomniafest.ru"
+
+    check_ok, matrix_id = asyncio.run(bot.get_person_matrix_id_by_row_id(42))
+
+    assert check_ok is True
+    assert matrix_id == "@existing:insomniafest.ru"
+
+
+def test_get_person_matrix_id_by_row_id_sync_failure_with_empty_cache(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.grist_person_row_to_matrix_id.clear()
+
+    async def fake_sync_grist_cache(force_full=False):
+        return False
+
+    monkeypatch.setattr(bot, "sync_grist_cache", fake_sync_grist_cache)
+
+    check_ok, matrix_id = asyncio.run(bot.get_person_matrix_id_by_row_id(42))
+
+    assert check_ok is False
+    assert matrix_id is None
+
+
+def test_get_person_matrix_id_by_row_id_populated_after_sync(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.grist_person_row_to_matrix_id.clear()
+
+    async def fake_sync_grist_cache(force_full=False):
+        bot.grist_person_row_to_matrix_id[42] = "@synced:insomniafest.ru"
+        return True
+
+    monkeypatch.setattr(bot, "sync_grist_cache", fake_sync_grist_cache)
+
+    check_ok, matrix_id = asyncio.run(bot.get_person_matrix_id_by_row_id(42))
+
+    assert check_ok is True
+    assert matrix_id == "@synced:insomniafest.ru"
+
+
 def test_require_admin_denies_non_admin(monkeypatch):
     bot = load_bot_module(monkeypatch)
 
@@ -432,6 +483,995 @@ def test_ops_register_reports_full_flow_results(monkeypatch):
     assert "team_join_ok=false" in text
     assert "failed_team_rooms=GR" in text
     assert "failed_moderation_rooms=GR" in text
+
+
+def test_get_person_participation_by_row_id_cache_hit(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.grist_person_row_to_person_name.clear()
+    bot.grist_person_row_to_team_memberships.clear()
+    bot.grist_person_row_to_person_name[42] = "No Telegram Person"
+    bot.grist_person_row_to_team_memberships[42] = {2: True, 5: False}
+
+    found, check_ok, person_name, memberships = asyncio.run(
+        bot.get_person_participation_by_row_id(42)
+    )
+
+    assert found is True
+    assert check_ok is True
+    assert person_name == "No Telegram Person"
+    assert memberships == {2: True, 5: False}
+
+
+def test_ops_register_person_usage(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.ADMIN_TELEGRAM_IDS.clear()
+    bot.ADMIN_TELEGRAM_IDS.add(1)
+
+    update = DummyUpdate(user_id=1, username="admin")
+    context = DummyContext(args=[])
+
+    asyncio.run(bot.ops_register_person(update, context))
+
+    assert update.message.sent
+    assert "Usage: /hr_register_person" in update.message.sent[0]["text"]
+
+
+def test_ops_register_person_reports_full_flow_results(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.ADMIN_TELEGRAM_IDS.clear()
+    bot.ADMIN_TELEGRAM_IDS.add(1)
+
+    async def fake_get_person_participation_by_row_id(person_row_id):
+        assert person_row_id == 42
+        return True, True, "No Telegram Person", {1: False, 2: True}
+
+    async def fake_get_person_matrix_id_by_row_id(person_row_id):
+        assert person_row_id == 42
+        return True, None
+
+    async def fake_register_synapse_user(username, password):
+        assert username == "volunteer42"
+        assert isinstance(password, str)
+        return True, None
+
+    async def fake_set_synapse_display_name(username, display_name):
+        assert username == "volunteer42"
+        assert display_name == "No Telegram Person"
+        return True
+
+    async def fake_update_grist_people_matrix_id_by_person_row(person_row_id, matrix_id):
+        assert person_row_id == 42
+        assert matrix_id == "@volunteer42:insomniafest.ru"
+        return True, None
+
+    async def fake_join_user_to_rooms(username, rooms):
+        assert username == "volunteer42"
+        return True, []
+
+    async def fake_join_user_to_team_rooms(username, memberships):
+        assert username == "volunteer42"
+        assert memberships == {1: False, 2: True}
+        return True, [], []
+
+    monkeypatch.setattr(bot, "get_person_participation_by_row_id", fake_get_person_participation_by_row_id)
+    monkeypatch.setattr(bot, "get_person_matrix_id_by_row_id", fake_get_person_matrix_id_by_row_id)
+    monkeypatch.setattr(bot, "register_synapse_user", fake_register_synapse_user)
+    monkeypatch.setattr(bot, "set_synapse_display_name", fake_set_synapse_display_name)
+    monkeypatch.setattr(
+        bot,
+        "update_grist_people_matrix_id_by_person_row",
+        fake_update_grist_people_matrix_id_by_person_row,
+    )
+    monkeypatch.setattr(bot, "join_user_to_rooms", fake_join_user_to_rooms)
+    monkeypatch.setattr(bot, "join_user_to_team_rooms", fake_join_user_to_team_rooms)
+
+    update = DummyUpdate(user_id=1, username="admin")
+    context = DummyContext(args=["42", "@Volunteer42:insomniafest.ru"])
+
+    asyncio.run(bot.ops_register_person(update, context))
+
+    assert update.message.sent
+    text = update.message.sent[0]["text"]
+    assert "Admin person registration" in text
+    assert "person_row_id=42" in text
+    assert "handle=volunteer42" in text
+    assert "mxid=@volunteer42:insomniafest.ru" in text
+    assert "person_name=No Telegram Person" in text
+    assert "default_join_ok=true" in text
+    assert "team_join_ok=true" in text
+
+
+def test_ops_register_person_aborts_when_matrix_check_fails(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.ADMIN_TELEGRAM_IDS.clear()
+    bot.ADMIN_TELEGRAM_IDS.add(1)
+
+    async def fake_get_person_participation_by_row_id(person_row_id):
+        assert person_row_id == 42
+        return True, True, "No Telegram Person", {2: True}
+
+    async def fake_get_person_matrix_id_by_row_id(person_row_id):
+        assert person_row_id == 42
+        return False, None
+
+    monkeypatch.setattr(bot, "get_person_participation_by_row_id", fake_get_person_participation_by_row_id)
+    monkeypatch.setattr(bot, "get_person_matrix_id_by_row_id", fake_get_person_matrix_id_by_row_id)
+
+    update = DummyUpdate(user_id=1, username="admin")
+    context = DummyContext(args=["42", "volunteer42"])
+
+    asyncio.run(bot.ops_register_person(update, context))
+
+    assert update.message.sent
+    assert "Не удалось проверить matrix_id" in update.message.sent[0]["text"]
+
+
+def test_ops_register_person_aborts_when_matrix_id_exists(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.ADMIN_TELEGRAM_IDS.clear()
+    bot.ADMIN_TELEGRAM_IDS.add(1)
+
+    async def fake_get_person_participation_by_row_id(person_row_id):
+        assert person_row_id == 42
+        return True, True, "No Telegram Person", {2: True}
+
+    async def fake_get_person_matrix_id_by_row_id(person_row_id):
+        assert person_row_id == 42
+        return True, "@already:insomniafest.ru"
+
+    monkeypatch.setattr(bot, "get_person_participation_by_row_id", fake_get_person_participation_by_row_id)
+    monkeypatch.setattr(bot, "get_person_matrix_id_by_row_id", fake_get_person_matrix_id_by_row_id)
+
+    update = DummyUpdate(user_id=1, username="admin")
+    context = DummyContext(args=["42", "volunteer42"])
+
+    asyncio.run(bot.ops_register_person(update, context))
+
+    assert update.message.sent
+    text = update.message.sent[0]["text"]
+    assert "уже заполнен matrix_id" in text
+    assert "@already:insomniafest.ru" in text
+
+
+def test_ops_register_person_rejects_non_integer_person_row_id(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.ADMIN_TELEGRAM_IDS.clear()
+    bot.ADMIN_TELEGRAM_IDS.add(1)
+
+    update = DummyUpdate(user_id=1, username="admin")
+    context = DummyContext(args=["not-an-int", "volunteer42"])
+
+    asyncio.run(bot.ops_register_person(update, context))
+
+    assert update.message.sent
+    assert "person_row_id must be an integer" in update.message.sent[0]["text"]
+
+
+def test_ops_register_person_rejects_invalid_matrix_localpart(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.ADMIN_TELEGRAM_IDS.clear()
+    bot.ADMIN_TELEGRAM_IDS.add(1)
+
+    update = DummyUpdate(user_id=1, username="admin")
+    context = DummyContext(args=["42", "@"])
+
+    asyncio.run(bot.ops_register_person(update, context))
+
+    assert update.message.sent
+    assert "matrix_localpart is invalid" in update.message.sent[0]["text"]
+
+
+def test_ops_register_person_aborts_when_eligibility_check_fails(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.ADMIN_TELEGRAM_IDS.clear()
+    bot.ADMIN_TELEGRAM_IDS.add(1)
+
+    async def fake_get_person_participation_by_row_id(person_row_id):
+        return False, False, None, {}
+
+    monkeypatch.setattr(bot, "get_person_participation_by_row_id", fake_get_person_participation_by_row_id)
+
+    update = DummyUpdate(user_id=1, username="admin")
+    context = DummyContext(args=["42", "volunteer42"])
+
+    asyncio.run(bot.ops_register_person(update, context))
+
+    assert update.message.sent
+    assert "Eligibility check failed" in update.message.sent[0]["text"]
+
+
+def test_ops_register_person_aborts_when_person_not_found(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.ADMIN_TELEGRAM_IDS.clear()
+    bot.ADMIN_TELEGRAM_IDS.add(1)
+
+    async def fake_get_person_participation_by_row_id(person_row_id):
+        return False, True, None, {}
+
+    monkeypatch.setattr(bot, "get_person_participation_by_row_id", fake_get_person_participation_by_row_id)
+
+    update = DummyUpdate(user_id=1, username="admin")
+    context = DummyContext(args=["42", "volunteer42"])
+
+    asyncio.run(bot.ops_register_person(update, context))
+
+    assert update.message.sent
+    assert "not found in Participations" in update.message.sent[0]["text"]
+
+
+def test_ops_register_person_aborts_when_no_memberships(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.ADMIN_TELEGRAM_IDS.clear()
+    bot.ADMIN_TELEGRAM_IDS.add(1)
+
+    async def fake_get_person_participation_by_row_id(person_row_id):
+        return True, True, "No Telegram Person", {}
+
+    monkeypatch.setattr(bot, "get_person_participation_by_row_id", fake_get_person_participation_by_row_id)
+
+    update = DummyUpdate(user_id=1, username="admin")
+    context = DummyContext(args=["42", "volunteer42"])
+
+    asyncio.run(bot.ops_register_person(update, context))
+
+    assert update.message.sent
+    assert "has no team memberships" in update.message.sent[0]["text"]
+
+
+def test_ops_register_person_aborts_when_registration_fails(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.ADMIN_TELEGRAM_IDS.clear()
+    bot.ADMIN_TELEGRAM_IDS.add(1)
+
+    async def fake_get_person_participation_by_row_id(person_row_id):
+        return True, True, "No Telegram Person", {2: True}
+
+    async def fake_get_person_matrix_id_by_row_id(person_row_id):
+        return True, None
+
+    async def fake_register_synapse_user(username, password):
+        return False, "REG_FAILED"
+
+    monkeypatch.setattr(bot, "get_person_participation_by_row_id", fake_get_person_participation_by_row_id)
+    monkeypatch.setattr(bot, "get_person_matrix_id_by_row_id", fake_get_person_matrix_id_by_row_id)
+    monkeypatch.setattr(bot, "register_synapse_user", fake_register_synapse_user)
+
+    update = DummyUpdate(user_id=1, username="admin")
+    context = DummyContext(args=["42", "volunteer42"])
+
+    asyncio.run(bot.ops_register_person(update, context))
+
+    assert update.message.sent
+    assert "Registration failed for volunteer42: REG_FAILED" in update.message.sent[0]["text"]
+
+
+def test_ops_register_person_aborts_when_reactivation_fails_hard(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.ADMIN_TELEGRAM_IDS.clear()
+    bot.ADMIN_TELEGRAM_IDS.add(1)
+
+    async def fake_get_person_participation_by_row_id(person_row_id):
+        return True, True, "No Telegram Person", {2: True}
+
+    async def fake_get_person_matrix_id_by_row_id(person_row_id):
+        return True, None
+
+    async def fake_register_synapse_user(username, password):
+        return False, "M_USER_IN_USE"
+
+    async def fake_reactivate_synapse_user(username, password):
+        return False, "REACTIVATION_FAILED"
+
+    monkeypatch.setattr(bot, "get_person_participation_by_row_id", fake_get_person_participation_by_row_id)
+    monkeypatch.setattr(bot, "get_person_matrix_id_by_row_id", fake_get_person_matrix_id_by_row_id)
+    monkeypatch.setattr(bot, "register_synapse_user", fake_register_synapse_user)
+    monkeypatch.setattr(bot, "reactivate_synapse_user", fake_reactivate_synapse_user)
+
+    update = DummyUpdate(user_id=1, username="admin")
+    context = DummyContext(args=["42", "volunteer42"])
+
+    asyncio.run(bot.ops_register_person(update, context))
+
+    assert update.message.sent
+    assert "Reactivation failed for volunteer42: REACTIVATION_FAILED" in update.message.sent[0]["text"]
+
+
+def test_ops_register_person_allows_existing_active_user_without_reactivation(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.ADMIN_TELEGRAM_IDS.clear()
+    bot.ADMIN_TELEGRAM_IDS.add(1)
+
+    async def fake_get_person_participation_by_row_id(person_row_id):
+        return True, True, "No Telegram Person", {2: True}
+
+    async def fake_get_person_matrix_id_by_row_id(person_row_id):
+        return True, None
+
+    async def fake_register_synapse_user(username, password):
+        return False, "M_USER_IN_USE"
+
+    async def fake_reactivate_synapse_user(username, password):
+        return False, "ACCOUNT_ACTIVE"
+
+    async def fake_set_synapse_display_name(username, display_name):
+        return True
+
+    async def fake_update_grist_people_matrix_id_by_person_row(person_row_id, matrix_id):
+        return True, None
+
+    async def fake_join_user_to_rooms(username, rooms):
+        return True, []
+
+    async def fake_join_user_to_team_rooms(username, memberships):
+        return True, [], []
+
+    monkeypatch.setattr(bot, "get_person_participation_by_row_id", fake_get_person_participation_by_row_id)
+    monkeypatch.setattr(bot, "get_person_matrix_id_by_row_id", fake_get_person_matrix_id_by_row_id)
+    monkeypatch.setattr(bot, "register_synapse_user", fake_register_synapse_user)
+    monkeypatch.setattr(bot, "reactivate_synapse_user", fake_reactivate_synapse_user)
+    monkeypatch.setattr(bot, "set_synapse_display_name", fake_set_synapse_display_name)
+    monkeypatch.setattr(
+        bot,
+        "update_grist_people_matrix_id_by_person_row",
+        fake_update_grist_people_matrix_id_by_person_row,
+    )
+    monkeypatch.setattr(bot, "join_user_to_rooms", fake_join_user_to_rooms)
+    monkeypatch.setattr(bot, "join_user_to_team_rooms", fake_join_user_to_team_rooms)
+
+    update = DummyUpdate(user_id=1, username="admin")
+    context = DummyContext(args=["42", "volunteer42"])
+
+    asyncio.run(bot.ops_register_person(update, context))
+
+    assert update.message.sent
+    text = update.message.sent[0]["text"]
+    assert "Admin person registration" in text
+    assert "created=false" in text
+    assert "reactivated=false" in text
+
+
+def test_ops_register_bez_telegi_starts_confirmation(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.ADMIN_TELEGRAM_IDS.clear()
+    bot.ADMIN_TELEGRAM_IDS.add(1)
+
+    async def fake_get_person_participation_by_row_id(person_row_id):
+        assert person_row_id == 42
+        return True, True, "No Telegram Person", {2: True}
+
+    async def fake_get_person_matrix_id_by_row_id(person_row_id):
+        assert person_row_id == 42
+        return True, None
+
+    monkeypatch.setattr(bot, "get_person_participation_by_row_id", fake_get_person_participation_by_row_id)
+    monkeypatch.setattr(bot, "get_person_matrix_id_by_row_id", fake_get_person_matrix_id_by_row_id)
+
+    update = DummyUpdate(user_id=1, username="admin")
+    context = DummyContext(args=["42"])
+    context.user_data = {}
+
+    asyncio.run(bot.ops_register_bez_telegi(update, context))
+
+    assert update.message.sent
+    assert "Вы хотите зарегистрировать" in update.message.sent[0]["text"]
+    assert context.user_data["hr_register_bez_telegi"]["stage"] == "confirm"
+
+
+def test_ops_register_bez_telegi_aborts_when_matrix_id_exists(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.ADMIN_TELEGRAM_IDS.clear()
+    bot.ADMIN_TELEGRAM_IDS.add(1)
+
+    async def fake_get_person_participation_by_row_id(person_row_id):
+        assert person_row_id == 42
+        return True, True, "No Telegram Person", {2: True}
+
+    async def fake_get_person_matrix_id_by_row_id(person_row_id):
+        assert person_row_id == 42
+        return True, "@existing:insomniafest.ru"
+
+    monkeypatch.setattr(bot, "get_person_participation_by_row_id", fake_get_person_participation_by_row_id)
+    monkeypatch.setattr(bot, "get_person_matrix_id_by_row_id", fake_get_person_matrix_id_by_row_id)
+
+    update = DummyUpdate(user_id=1, username="admin")
+    context = DummyContext(args=["42"])
+    context.user_data = {}
+
+    asyncio.run(bot.ops_register_bez_telegi(update, context))
+
+    assert update.message.sent
+    text = update.message.sent[0]["text"]
+    assert "уже заполнен matrix_id" in text
+    assert "@existing:insomniafest.ru" in text
+    assert "hr_register_bez_telegi" not in context.user_data
+
+
+def test_ops_register_bez_telegi_usage(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.ADMIN_TELEGRAM_IDS.clear()
+    bot.ADMIN_TELEGRAM_IDS.add(1)
+
+    update = DummyUpdate(user_id=1, username="admin")
+    context = DummyContext(args=[])
+
+    asyncio.run(bot.ops_register_bez_telegi(update, context))
+
+    assert update.message.sent
+    assert "Usage: /hr_register_bez_telegi" in update.message.sent[0]["text"]
+
+
+def test_ops_register_bez_telegi_rejects_non_integer_person_row_id(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.ADMIN_TELEGRAM_IDS.clear()
+    bot.ADMIN_TELEGRAM_IDS.add(1)
+
+    update = DummyUpdate(user_id=1, username="admin")
+    context = DummyContext(args=["oops"])
+
+    asyncio.run(bot.ops_register_bez_telegi(update, context))
+
+    assert update.message.sent
+    assert "person_row_id must be an integer" in update.message.sent[0]["text"]
+
+
+def test_ops_register_bez_telegi_aborts_when_eligibility_check_fails(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.ADMIN_TELEGRAM_IDS.clear()
+    bot.ADMIN_TELEGRAM_IDS.add(1)
+
+    async def fake_get_person_participation_by_row_id(person_row_id):
+        return False, False, None, {}
+
+    monkeypatch.setattr(bot, "get_person_participation_by_row_id", fake_get_person_participation_by_row_id)
+
+    update = DummyUpdate(user_id=1, username="admin")
+    context = DummyContext(args=["42"])
+
+    asyncio.run(bot.ops_register_bez_telegi(update, context))
+
+    assert update.message.sent
+    assert "Eligibility check failed" in update.message.sent[0]["text"]
+
+
+def test_ops_register_bez_telegi_aborts_when_not_found(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.ADMIN_TELEGRAM_IDS.clear()
+    bot.ADMIN_TELEGRAM_IDS.add(1)
+
+    async def fake_get_person_participation_by_row_id(person_row_id):
+        return False, True, None, {}
+
+    monkeypatch.setattr(bot, "get_person_participation_by_row_id", fake_get_person_participation_by_row_id)
+
+    update = DummyUpdate(user_id=1, username="admin")
+    context = DummyContext(args=["42"])
+
+    asyncio.run(bot.ops_register_bez_telegi(update, context))
+
+    assert update.message.sent
+    assert "not found in Participations" in update.message.sent[0]["text"]
+
+
+def test_ops_register_bez_telegi_aborts_when_no_memberships(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.ADMIN_TELEGRAM_IDS.clear()
+    bot.ADMIN_TELEGRAM_IDS.add(1)
+
+    async def fake_get_person_participation_by_row_id(person_row_id):
+        return True, True, "No Telegram Person", {}
+
+    monkeypatch.setattr(bot, "get_person_participation_by_row_id", fake_get_person_participation_by_row_id)
+
+    update = DummyUpdate(user_id=1, username="admin")
+    context = DummyContext(args=["42"])
+
+    asyncio.run(bot.ops_register_bez_telegi(update, context))
+
+    assert update.message.sent
+    assert "has no team memberships" in update.message.sent[0]["text"]
+
+
+def test_ops_register_bez_telegi_aborts_when_matrix_check_fails(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.ADMIN_TELEGRAM_IDS.clear()
+    bot.ADMIN_TELEGRAM_IDS.add(1)
+
+    async def fake_get_person_participation_by_row_id(person_row_id):
+        return True, True, "No Telegram Person", {2: True}
+
+    async def fake_get_person_matrix_id_by_row_id(person_row_id):
+        return False, None
+
+    monkeypatch.setattr(bot, "get_person_participation_by_row_id", fake_get_person_participation_by_row_id)
+    monkeypatch.setattr(bot, "get_person_matrix_id_by_row_id", fake_get_person_matrix_id_by_row_id)
+
+    update = DummyUpdate(user_id=1, username="admin")
+    context = DummyContext(args=["42"])
+
+    asyncio.run(bot.ops_register_bez_telegi(update, context))
+
+    assert update.message.sent
+    assert "Не удалось проверить matrix_id" in update.message.sent[0]["text"]
+
+
+def test_handle_hr_register_bez_telegi_blocks_if_has_telegram(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    async def fake_is_hr_command_user(update):
+        return True
+
+    async def fake_get_person_telegram_handle_by_row_id(person_row_id):
+        return True, "has.telegram"
+
+    monkeypatch.setattr(bot, "is_hr_command_user", fake_is_hr_command_user)
+    monkeypatch.setattr(bot, "get_person_telegram_handle_by_row_id", fake_get_person_telegram_handle_by_row_id)
+
+    update = make_text_update(user_id=1, username="admin", text="да")
+    context = DummyContext()
+    context.user_data = {
+        "hr_register_bez_telegi": {
+            "stage": "confirm",
+            "person_row_id": 42,
+            "person_name": "Has Tg",
+            "memberships": {2: True},
+        }
+    }
+
+    asyncio.run(bot.handle_hr_register_bez_telegi_input(update, context))
+
+    assert update.message.sent
+    assert "Используйте /hr_register" in update.message.sent[0]["text"]
+    assert "hr_register_bez_telegi" not in context.user_data
+
+
+def test_handle_hr_register_bez_telegi_denies_non_hr_and_clears_state(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    async def fake_is_hr_command_user(update):
+        return False
+
+    monkeypatch.setattr(bot, "is_hr_command_user", fake_is_hr_command_user)
+
+    update = make_text_update(user_id=999, username="user", text="да")
+    context = DummyContext()
+    context.user_data = {
+        "hr_register_bez_telegi": {
+            "stage": "confirm",
+            "person_row_id": 42,
+            "person_name": "No Telegram Person",
+            "memberships": {2: True},
+        }
+    }
+
+    asyncio.run(bot.handle_hr_register_bez_telegi_input(update, context))
+
+    assert update.message.sent
+    assert "недоступна" in update.message.sent[0]["text"].lower()
+    assert "hr_register_bez_telegi" not in context.user_data
+
+
+def test_handle_hr_register_bez_telegi_confirm_requires_yes_or_no(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    async def fake_is_hr_command_user(update):
+        return True
+
+    monkeypatch.setattr(bot, "is_hr_command_user", fake_is_hr_command_user)
+
+    update = make_text_update(user_id=1, username="admin", text="maybe")
+    context = DummyContext()
+    context.user_data = {
+        "hr_register_bez_telegi": {
+            "stage": "confirm",
+            "person_row_id": 42,
+            "person_name": "No Telegram Person",
+            "memberships": {2: True},
+        }
+    }
+
+    asyncio.run(bot.handle_hr_register_bez_telegi_input(update, context))
+
+    assert update.message.sent
+    assert "Ответьте 'да' или 'нет'." in update.message.sent[0]["text"]
+    assert context.user_data["hr_register_bez_telegi"]["stage"] == "confirm"
+
+
+def test_handle_hr_register_bez_telegi_confirm_cancel(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    async def fake_is_hr_command_user(update):
+        return True
+
+    monkeypatch.setattr(bot, "is_hr_command_user", fake_is_hr_command_user)
+
+    update = make_text_update(user_id=1, username="admin", text="нет")
+    context = DummyContext()
+    context.user_data = {
+        "hr_register_bez_telegi": {
+            "stage": "confirm",
+            "person_row_id": 42,
+            "person_name": "No Telegram Person",
+            "memberships": {2: True},
+        }
+    }
+
+    asyncio.run(bot.handle_hr_register_bez_telegi_input(update, context))
+
+    assert update.message.sent
+    assert "Операция отменена." in update.message.sent[0]["text"]
+    assert "hr_register_bez_telegi" not in context.user_data
+
+
+def test_handle_hr_register_bez_telegi_confirm_moves_to_username_stage(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    async def fake_is_hr_command_user(update):
+        return True
+
+    async def fake_get_person_telegram_handle_by_row_id(person_row_id):
+        return True, None
+
+    monkeypatch.setattr(bot, "is_hr_command_user", fake_is_hr_command_user)
+    monkeypatch.setattr(bot, "get_person_telegram_handle_by_row_id", fake_get_person_telegram_handle_by_row_id)
+
+    update = make_text_update(user_id=1, username="admin", text="да")
+    context = DummyContext()
+    context.user_data = {
+        "hr_register_bez_telegi": {
+            "stage": "confirm",
+            "person_row_id": 42,
+            "person_name": "No Telegram Person",
+            "memberships": {2: True},
+        }
+    }
+
+    asyncio.run(bot.handle_hr_register_bez_telegi_input(update, context))
+
+    assert update.message.sent
+    assert "Введите желаемый Matrix username" in update.message.sent[0]["text"]
+    assert context.user_data["hr_register_bez_telegi"]["stage"] == "await_username"
+
+
+def test_handle_hr_register_bez_telegi_confirm_aborts_when_telegram_check_fails(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    async def fake_is_hr_command_user(update):
+        return True
+
+    async def fake_get_person_telegram_handle_by_row_id(person_row_id):
+        return False, None
+
+    monkeypatch.setattr(bot, "is_hr_command_user", fake_is_hr_command_user)
+    monkeypatch.setattr(bot, "get_person_telegram_handle_by_row_id", fake_get_person_telegram_handle_by_row_id)
+
+    update = make_text_update(user_id=1, username="admin", text="да")
+    context = DummyContext()
+    context.user_data = {
+        "hr_register_bez_telegi": {
+            "stage": "confirm",
+            "person_row_id": 42,
+            "person_name": "No Telegram Person",
+            "memberships": {2: True},
+        }
+    }
+
+    asyncio.run(bot.handle_hr_register_bez_telegi_input(update, context))
+
+    assert update.message.sent
+    assert "Не удалось проверить Telegram-поле" in update.message.sent[0]["text"]
+    assert "hr_register_bez_telegi" not in context.user_data
+
+
+def test_handle_hr_register_bez_telegi_resets_on_unknown_stage(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    async def fake_is_hr_command_user(update):
+        return True
+
+    monkeypatch.setattr(bot, "is_hr_command_user", fake_is_hr_command_user)
+
+    update = make_text_update(user_id=1, username="admin", text="anything")
+    context = DummyContext()
+    context.user_data = {
+        "hr_register_bez_telegi": {
+            "stage": "broken",
+            "person_row_id": 42,
+            "person_name": "No Telegram Person",
+            "memberships": {2: True},
+        }
+    }
+
+    asyncio.run(bot.handle_hr_register_bez_telegi_input(update, context))
+
+    assert update.message.sent
+    assert "Операция сброшена" in update.message.sent[0]["text"]
+    assert "hr_register_bez_telegi" not in context.user_data
+
+
+def test_handle_hr_register_bez_telegi_rejects_empty_username(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    async def fake_is_hr_command_user(update):
+        return True
+
+    monkeypatch.setattr(bot, "is_hr_command_user", fake_is_hr_command_user)
+
+    update = make_text_update(user_id=1, username="admin", text="@")
+    context = DummyContext()
+    context.user_data = {
+        "hr_register_bez_telegi": {
+            "stage": "await_username",
+            "person_row_id": 42,
+            "person_name": "No Telegram Person",
+            "memberships": {2: True},
+        }
+    }
+
+    asyncio.run(bot.handle_hr_register_bez_telegi_input(update, context))
+
+    assert update.message.sent
+    assert "Неверный username" in update.message.sent[0]["text"]
+    assert context.user_data["hr_register_bez_telegi"]["stage"] == "await_username"
+
+
+def test_handle_hr_register_bez_telegi_rejects_username_with_invalid_chars(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    async def fake_is_hr_command_user(update):
+        return True
+
+    monkeypatch.setattr(bot, "is_hr_command_user", fake_is_hr_command_user)
+
+    update = make_text_update(user_id=1, username="admin", text="bad*name")
+    context = DummyContext()
+    context.user_data = {
+        "hr_register_bez_telegi": {
+            "stage": "await_username",
+            "person_row_id": 42,
+            "person_name": "No Telegram Person",
+            "memberships": {2: True},
+        }
+    }
+
+    asyncio.run(bot.handle_hr_register_bez_telegi_input(update, context))
+
+    assert update.message.sent
+    assert "недопустимые символы" in update.message.sent[0]["text"]
+    assert context.user_data["hr_register_bez_telegi"]["stage"] == "await_username"
+
+
+def test_handle_hr_register_bez_telegi_username_exists_prompts_retry(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    async def fake_is_hr_command_user(update):
+        return True
+
+    async def fake_get_synapse_registration_status(username):
+        assert username == "new.person"
+        return "registered"
+
+    monkeypatch.setattr(bot, "is_hr_command_user", fake_is_hr_command_user)
+    monkeypatch.setattr(bot, "get_synapse_registration_status", fake_get_synapse_registration_status)
+
+    update = make_text_update(user_id=1, username="admin", text="new.person")
+    context = DummyContext()
+    context.user_data = {
+        "hr_register_bez_telegi": {
+            "stage": "await_username",
+            "person_row_id": 42,
+            "person_name": "No Telegram Person",
+            "memberships": {2: True},
+        }
+    }
+
+    asyncio.run(bot.handle_hr_register_bez_telegi_input(update, context))
+
+    assert update.message.sent
+    assert "уже существует" in update.message.sent[0]["text"]
+    assert context.user_data["hr_register_bez_telegi"]["stage"] == "await_username"
+
+
+def test_handle_hr_register_bez_telegi_aborts_when_synapse_status_unknown(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    async def fake_is_hr_command_user(update):
+        return True
+
+    async def fake_get_synapse_registration_status(username):
+        return "unknown"
+
+    monkeypatch.setattr(bot, "is_hr_command_user", fake_is_hr_command_user)
+    monkeypatch.setattr(bot, "get_synapse_registration_status", fake_get_synapse_registration_status)
+
+    update = make_text_update(user_id=1, username="admin", text="new.person")
+    context = DummyContext()
+    context.user_data = {
+        "hr_register_bez_telegi": {
+            "stage": "await_username",
+            "person_row_id": 42,
+            "person_name": "No Telegram Person",
+            "memberships": {2: True},
+        }
+    }
+
+    asyncio.run(bot.handle_hr_register_bez_telegi_input(update, context))
+
+    assert update.message.sent
+    assert "Не удалось проверить наличие username" in update.message.sent[0]["text"]
+    assert "hr_register_bez_telegi" not in context.user_data
+
+
+def test_handle_hr_register_bez_telegi_aborts_on_registration_failure(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    async def fake_is_hr_command_user(update):
+        return True
+
+    async def fake_get_synapse_registration_status(username):
+        return "not_registered"
+
+    async def fake_register_synapse_user(username, password):
+        return False, "REG_FAILED"
+
+    monkeypatch.setattr(bot, "is_hr_command_user", fake_is_hr_command_user)
+    monkeypatch.setattr(bot, "get_synapse_registration_status", fake_get_synapse_registration_status)
+    monkeypatch.setattr(bot, "register_synapse_user", fake_register_synapse_user)
+
+    update = make_text_update(user_id=1, username="admin", text="new.person")
+    context = DummyContext()
+    context.user_data = {
+        "hr_register_bez_telegi": {
+            "stage": "await_username",
+            "person_row_id": 42,
+            "person_name": "No Telegram Person",
+            "memberships": {2: True},
+        }
+    }
+
+    asyncio.run(bot.handle_hr_register_bez_telegi_input(update, context))
+
+    assert update.message.sent
+    assert "Registration failed for new.person: REG_FAILED" in update.message.sent[0]["text"]
+    assert "hr_register_bez_telegi" not in context.user_data
+
+
+def test_handle_hr_register_bez_telegi_user_in_use_prompts_retry(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    async def fake_is_hr_command_user(update):
+        return True
+
+    async def fake_get_synapse_registration_status(username):
+        return "not_registered"
+
+    async def fake_register_synapse_user(username, password):
+        return False, "M_USER_IN_USE"
+
+    monkeypatch.setattr(bot, "is_hr_command_user", fake_is_hr_command_user)
+    monkeypatch.setattr(bot, "get_synapse_registration_status", fake_get_synapse_registration_status)
+    monkeypatch.setattr(bot, "register_synapse_user", fake_register_synapse_user)
+
+    update = make_text_update(user_id=1, username="admin", text="new.person")
+    context = DummyContext()
+    context.user_data = {
+        "hr_register_bez_telegi": {
+            "stage": "await_username",
+            "person_row_id": 42,
+            "person_name": "No Telegram Person",
+            "memberships": {2: True},
+        }
+    }
+
+    asyncio.run(bot.handle_hr_register_bez_telegi_input(update, context))
+
+    assert update.message.sent
+    assert "уже существует" in update.message.sent[0]["text"]
+    assert context.user_data["hr_register_bez_telegi"]["stage"] == "await_username"
+
+
+def test_ops_sync_teams_not_registered_status(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.ADMIN_TELEGRAM_IDS.clear()
+    bot.ADMIN_TELEGRAM_IDS.add(1)
+
+    async def fake_prepare_team_sync_target(handle):
+        return "test_member", "Test Person", {2: True}, "NOT_REGISTERED:not_registered"
+
+    monkeypatch.setattr(bot, "prepare_team_sync_target", fake_prepare_team_sync_target)
+
+    update = DummyUpdate(user_id=1, username="admin")
+    context = DummyContext(args=["@test_member"])
+
+    asyncio.run(bot.ops_sync_teams(update, context))
+
+    assert update.message.sent
+    assert "is not registered in Matrix yet" in update.message.sent[0]["text"]
+
+
+def test_handle_hr_register_bez_telegi_registers_after_username(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    async def fake_is_hr_command_user(update):
+        return True
+
+    async def fake_get_synapse_registration_status(username):
+        assert username == "new.person"
+        return "not_registered"
+
+    async def fake_register_synapse_user(username, password):
+        assert username == "new.person"
+        return True, None
+
+    async def fake_set_synapse_display_name(username, display_name):
+        assert username == "new.person"
+        assert display_name == "No Telegram Person"
+        return True
+
+    async def fake_update_grist_people_matrix_id_by_person_row(person_row_id, matrix_id):
+        assert person_row_id == 42
+        assert matrix_id == "@new.person:insomniafest.ru"
+        return True, None
+
+    async def fake_join_user_to_rooms(username, rooms):
+        return True, []
+
+    async def fake_join_user_to_team_rooms(username, memberships):
+        assert memberships == {2: True}
+        return True, [], []
+
+    monkeypatch.setattr(bot, "is_hr_command_user", fake_is_hr_command_user)
+    monkeypatch.setattr(bot, "get_synapse_registration_status", fake_get_synapse_registration_status)
+    monkeypatch.setattr(bot, "register_synapse_user", fake_register_synapse_user)
+    monkeypatch.setattr(bot, "set_synapse_display_name", fake_set_synapse_display_name)
+    monkeypatch.setattr(
+        bot,
+        "update_grist_people_matrix_id_by_person_row",
+        fake_update_grist_people_matrix_id_by_person_row,
+    )
+    monkeypatch.setattr(bot, "join_user_to_rooms", fake_join_user_to_rooms)
+    monkeypatch.setattr(bot, "join_user_to_team_rooms", fake_join_user_to_team_rooms)
+
+    update = make_text_update(user_id=1, username="admin", text="new.person")
+    context = DummyContext()
+    context.user_data = {
+        "hr_register_bez_telegi": {
+            "stage": "await_username",
+            "person_row_id": 42,
+            "person_name": "No Telegram Person",
+            "memberships": {2: True},
+        }
+    }
+
+    asyncio.run(bot.handle_hr_register_bez_telegi_input(update, context))
+
+    assert update.message.sent
+    text = update.message.sent[0]["text"]
+    assert "Участник зарегистрирован" in text
+    assert "mxid=@new.person:insomniafest.ru" in text
+    assert "team_join_ok=true" in text
+    assert "hr_register_bez_telegi" not in context.user_data
 
 
 def test_ops_sync_teams_reports_success(monkeypatch):
@@ -822,6 +1862,62 @@ def test_reactivate_synapse_user_account_active(monkeypatch):
     assert code == "ACCOUNT_ACTIVE"
 
 
+def test_reactivate_synapse_user_missing_token(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    monkeypatch.setattr(bot, "SYNAPSE_ADMIN_ACCESS_TOKEN", None)
+
+    ok, code = asyncio.run(bot.reactivate_synapse_user("alice", "pwd"))
+    assert ok is False
+    assert code == "REACTIVATION_TOKEN_MISSING"
+
+
+def test_reactivate_synapse_user_lookup_failed(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    monkeypatch.setattr(bot, "SYNAPSE_ADMIN_ACCESS_TOKEN", "token")
+
+    async def fake_request_with_retries(client, method, url, **kwargs):
+        return FakeResponse(404, {}, text="not found")
+
+    monkeypatch.setattr(bot, "request_with_retries", fake_request_with_retries)
+
+    ok, code = asyncio.run(bot.reactivate_synapse_user("alice", "pwd"))
+    assert ok is False
+    assert code == "USER_LOOKUP_FAILED"
+
+
+def test_reactivate_synapse_user_reactivation_failed(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    monkeypatch.setattr(bot, "SYNAPSE_ADMIN_ACCESS_TOKEN", "token")
+
+    responses = [
+        FakeResponse(200, {"deactivated": True}),
+        FakeResponse(500, {}, text="boom"),
+    ]
+
+    async def fake_request_with_retries(client, method, url, **kwargs):
+        return responses.pop(0)
+
+    monkeypatch.setattr(bot, "request_with_retries", fake_request_with_retries)
+
+    ok, code = asyncio.run(bot.reactivate_synapse_user("alice", "pwd"))
+    assert ok is False
+    assert code == "REACTIVATION_FAILED"
+
+
+def test_reactivate_synapse_user_exception(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    monkeypatch.setattr(bot, "SYNAPSE_ADMIN_ACCESS_TOKEN", "token")
+
+    async def fail_request_with_retries(client, method, url, **kwargs):
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr(bot, "request_with_retries", fail_request_with_retries)
+
+    ok, code = asyncio.run(bot.reactivate_synapse_user("alice", "pwd"))
+    assert ok is False
+    assert code == "REACTIVATION_EXCEPTION"
+
+
 def test_get_synapse_registration_status_registered(monkeypatch):
     bot = load_bot_module(monkeypatch)
     monkeypatch.setattr(bot, "SYNAPSE_ADMIN_ACCESS_TOKEN", "token")
@@ -850,6 +1946,43 @@ def test_get_synapse_registration_status_not_registered(monkeypatch):
     status = asyncio.run(bot.get_synapse_registration_status("alice"))
 
     assert status == "not_registered"
+
+
+def test_get_synapse_registration_status_unknown_without_token(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    monkeypatch.setattr(bot, "SYNAPSE_ADMIN_ACCESS_TOKEN", None)
+
+    status = asyncio.run(bot.get_synapse_registration_status("alice"))
+
+    assert status == "unknown"
+
+
+def test_get_synapse_registration_status_unknown_on_unexpected_status(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    monkeypatch.setattr(bot, "SYNAPSE_ADMIN_ACCESS_TOKEN", "token")
+
+    async def fake_request_with_retries(client, method, url, **kwargs):
+        return FakeResponse(500, {}, text="oops")
+
+    monkeypatch.setattr(bot, "request_with_retries", fake_request_with_retries)
+
+    status = asyncio.run(bot.get_synapse_registration_status("alice"))
+
+    assert status == "unknown"
+
+
+def test_get_synapse_registration_status_unknown_on_exception(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    monkeypatch.setattr(bot, "SYNAPSE_ADMIN_ACCESS_TOKEN", "token")
+
+    async def fail_request_with_retries(client, method, url, **kwargs):
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr(bot, "request_with_retries", fail_request_with_retries)
+
+    status = asyncio.run(bot.get_synapse_registration_status("alice"))
+
+    assert status == "unknown"
 
 
 def test_reset_synapse_password_success(monkeypatch):
@@ -887,6 +2020,61 @@ def test_reset_synapse_password_failed(monkeypatch):
     ok, code = asyncio.run(bot.reset_synapse_password("alice", "pwd"))
     assert ok is False
     assert code == "RESET_FAILED"
+
+
+def test_reset_synapse_password_exception(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    monkeypatch.setattr(bot, "SYNAPSE_ADMIN_ACCESS_TOKEN", "token")
+
+    async def fail_request_with_retries(client, method, url, **kwargs):
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr(bot, "request_with_retries", fail_request_with_retries)
+
+    ok, code = asyncio.run(bot.reset_synapse_password("alice", "pwd"))
+    assert ok is False
+    assert code == "RESET_EXCEPTION"
+
+
+def test_set_synapse_display_name_noop_for_empty_name(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    ok = asyncio.run(bot.set_synapse_display_name("alice", ""))
+    assert ok is True
+
+
+def test_set_synapse_display_name_missing_token(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    monkeypatch.setattr(bot, "SYNAPSE_ADMIN_ACCESS_TOKEN", None)
+
+    ok = asyncio.run(bot.set_synapse_display_name("alice", "Alice"))
+    assert ok is False
+
+
+def test_set_synapse_display_name_failed(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    monkeypatch.setattr(bot, "SYNAPSE_ADMIN_ACCESS_TOKEN", "token")
+
+    async def fake_request_with_retries(client, method, url, **kwargs):
+        return FakeResponse(500, {}, text="oops")
+
+    monkeypatch.setattr(bot, "request_with_retries", fake_request_with_retries)
+
+    ok = asyncio.run(bot.set_synapse_display_name("alice", "Alice"))
+    assert ok is False
+
+
+def test_set_synapse_display_name_exception(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    monkeypatch.setattr(bot, "SYNAPSE_ADMIN_ACCESS_TOKEN", "token")
+
+    async def fail_request_with_retries(client, method, url, **kwargs):
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr(bot, "request_with_retries", fail_request_with_retries)
+
+    ok = asyncio.run(bot.set_synapse_display_name("alice", "Alice"))
+    assert ok is False
 
 
 def test_register_synapse_user_exception(monkeypatch):
@@ -1153,6 +2341,79 @@ def test_sync_user_to_team_rooms_detailed_reports_already_joined(monkeypatch):
     assert results[0]["room_id"] == "!room72:insomniafest.ru"
 
 
+def test_sync_user_to_team_rooms_detailed_handles_room_creation_failure(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    async def fake_ensure_team_room(team_id, team_name):
+        return None
+
+    monkeypatch.setattr(bot, "ensure_team_room", fake_ensure_team_room)
+
+    results, failed_moderation_rooms = asyncio.run(
+        bot.sync_user_to_team_rooms_detailed("alice", {72: True})
+    )
+
+    assert failed_moderation_rooms == []
+    assert len(results) == 1
+    assert results[0]["status"] == "failed"
+    assert results[0]["room_id"] is None
+
+
+def test_sync_user_to_team_rooms_detailed_marks_failed_join(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    async def fake_ensure_team_room(team_id, team_name):
+        return "!room72:insomniafest.ru"
+
+    async def fake_get_room_parent_spaces(room_id):
+        return []
+
+    async def fake_join_user_to_room(username, room_alias_or_id):
+        return "failed"
+
+    monkeypatch.setattr(bot, "ensure_team_room", fake_ensure_team_room)
+    monkeypatch.setattr(bot, "get_room_parent_spaces", fake_get_room_parent_spaces)
+    monkeypatch.setattr(bot, "join_user_to_room", fake_join_user_to_room)
+
+    results, failed_moderation_rooms = asyncio.run(
+        bot.sync_user_to_team_rooms_detailed("alice", {72: False})
+    )
+
+    assert failed_moderation_rooms == []
+    assert len(results) == 1
+    assert results[0]["status"] == "failed"
+    assert results[0]["room_id"] == "!room72:insomniafest.ru"
+
+
+def test_sync_user_to_team_rooms_detailed_collects_moderation_failures(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    async def fake_ensure_team_room(team_id, team_name):
+        return "!room72:insomniafest.ru"
+
+    async def fake_get_room_parent_spaces(room_id):
+        return []
+
+    async def fake_join_user_to_room(username, room_alias_or_id):
+        return "joined"
+
+    async def fake_set_room_moderator(room_id, user_id):
+        return False
+
+    monkeypatch.setattr(bot, "ensure_team_room", fake_ensure_team_room)
+    monkeypatch.setattr(bot, "get_room_parent_spaces", fake_get_room_parent_spaces)
+    monkeypatch.setattr(bot, "join_user_to_room", fake_join_user_to_room)
+    monkeypatch.setattr(bot, "set_room_moderator", fake_set_room_moderator)
+
+    results, failed_moderation_rooms = asyncio.run(
+        bot.sync_user_to_team_rooms_detailed("alice", {72: True})
+    )
+
+    assert len(results) == 1
+    assert results[0]["status"] == "joined"
+    assert failed_moderation_rooms == [results[0]["team_name"]]
+
+
 def test_help_command(monkeypatch):
     bot = load_bot_module(monkeypatch)
     bot.ADMIN_TELEGRAM_IDS.clear()
@@ -1258,6 +2519,8 @@ def test_help_command_admin_includes_owner_commands(monkeypatch):
     assert "/hr_sync" in text
     assert "/hr_check" in text
     assert "/hr_register" in text
+    assert "/hr_register_person" in text
+    assert "/hr_register_bez_telegi" in text
 
 
 def test_help_command_hr_user_includes_hr_commands(monkeypatch):
@@ -1277,6 +2540,8 @@ def test_help_command_hr_user_includes_hr_commands(monkeypatch):
     assert "/hr_sync" in text
     assert "/hr_check" in text
     assert "/hr_register" in text
+    assert "/hr_register_person" in text
+    assert "/hr_register_bez_telegi" in text
 
 
 def test_help_command_organizer_includes_hr_commands(monkeypatch):
@@ -1297,6 +2562,8 @@ def test_help_command_organizer_includes_hr_commands(monkeypatch):
     assert "/hr_sync" in text
     assert "/hr_check" in text
     assert "/hr_register" in text
+    assert "/hr_register_person" in text
+    assert "/hr_register_bez_telegi" in text
 
 
 def test_register_rate_limited(monkeypatch):
@@ -1659,6 +2926,19 @@ def test_check_synapse_admin_token_rejected(monkeypatch):
     ok, err = asyncio.run(bot.check_synapse_admin_token())
     assert ok is False
     assert "403" in err
+
+
+def test_check_synapse_admin_token_unexpected_status(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    async def fake_get(self, url, headers=None, **kwargs):
+        return FakeResponse(500, {})
+
+    monkeypatch.setattr(bot.httpx.AsyncClient, "get", fake_get)
+
+    ok, err = asyncio.run(bot.check_synapse_admin_token())
+    assert ok is False
+    assert "Unexpected Synapse response" in err
 
 
 def test_check_synapse_admin_token_unreachable(monkeypatch):

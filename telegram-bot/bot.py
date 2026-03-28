@@ -9,12 +9,11 @@ import hmac
 import hashlib
 import secrets
 import time
-import re
 from urllib.parse import quote
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.error import NetworkError
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import Application, CommandHandler, ContextTypes
 
 # Configure logging
 logging.basicConfig(
@@ -80,10 +79,6 @@ grist_handle_to_person_name = {}
 grist_handle_to_team_memberships = {}
 grist_handle_to_is_hr_now = {}
 grist_handle_to_person_row_id = {}
-grist_person_row_to_person_name = {}
-grist_person_row_to_team_memberships = {}
-grist_person_row_to_telegram_handle = {}
-grist_person_row_to_matrix_id = {}
 grist_team_id_to_name = {}
 grist_max_record_id = 0
 grist_last_full_sync = 0.0
@@ -246,10 +241,6 @@ async def sync_grist_cache(force_full: bool = False) -> bool:
         grist_handle_to_team_memberships.clear()
         grist_handle_to_is_hr_now.clear()
         grist_handle_to_person_row_id.clear()
-        grist_person_row_to_person_name.clear()
-        grist_person_row_to_team_memberships.clear()
-        grist_person_row_to_telegram_handle.clear()
-        grist_person_row_to_matrix_id.clear()
         grist_team_id_to_name.clear()
         grist_max_record_id = 0
 
@@ -276,29 +267,9 @@ async def sync_grist_cache(force_full: bool = False) -> bool:
             team_id = parse_grist_ref_id(fields.get("team"))
             role_code = fields.get("role_code")
             is_hr_now = parse_grist_bool(fields.get("isHR_Now"))
-            matrix_id = fields.get("matrix_id")
             person_row_id = parse_grist_ref_id(fields.get("person_row_id"))
             if person_row_id is None:
                 person_row_id = parse_grist_ref_id(fields.get("person"))
-
-            is_organizer = (
-                isinstance(role_code, str)
-                and role_code.strip().upper() == "ORGANIZER"
-            )
-
-            if person_row_id is not None:
-                if isinstance(person_name, str) and person_name.strip():
-                    grist_person_row_to_person_name[person_row_id] = person_name.strip()
-
-                if isinstance(matrix_id, str) and matrix_id.strip():
-                    grist_person_row_to_matrix_id[person_row_id] = matrix_id.strip()
-
-                try:
-                    if team_id is not None:
-                        person_memberships = grist_person_row_to_team_memberships.setdefault(person_row_id, {})
-                        person_memberships[team_id] = person_memberships.get(team_id, False) or is_organizer
-                except (TypeError, ValueError):
-                    pass
 
             try:
                 record_id = int(record_id)
@@ -306,10 +277,6 @@ async def sync_grist_cache(force_full: bool = False) -> bool:
                 continue
 
             normalized = normalize_telegram_handle(telegram2)
-
-            if person_row_id is not None and normalized:
-                grist_person_row_to_telegram_handle[person_row_id] = normalized
-
             if not normalized:
                 continue
 
@@ -329,6 +296,10 @@ async def sync_grist_cache(force_full: bool = False) -> bool:
                 if team_id is None:
                     raise ValueError("empty team ref")
                 memberships = grist_handle_to_team_memberships.setdefault(normalized, {})
+                is_organizer = (
+                    isinstance(role_code, str)
+                    and role_code.strip().upper() == "ORGANIZER"
+                )
                 memberships[team_id] = memberships.get(team_id, False) or is_organizer
             except (TypeError, ValueError):
                 pass
@@ -363,12 +334,6 @@ async def update_grist_people_matrix_id(handle: str, matrix_id: str) -> tuple[bo
     if person_row_id is None:
         return False, "PERSON_ROW_ID_MISSING"
 
-    return await update_grist_people_matrix_id_by_person_row(person_row_id, matrix_id)
-
-
-async def update_grist_people_matrix_id_by_person_row(person_row_id: int, matrix_id: str) -> tuple[bool, str | None]:
-    """Write Matrix ID to Grist People table by People row id."""
-
     url = f"https://grist.insomniafest.ru/api/docs/{GRIST_DOC_ID}/tables/{GRIST_PEOPLE_TABLE_ID}/records"
     headers = {
         "Authorization": f"Bearer {GRIST_API_KEY}",
@@ -395,77 +360,16 @@ async def update_grist_people_matrix_id_by_person_row(person_row_id: int, matrix
                 json=payload,
             )
     except Exception as e:
-        logger.warning(f"Failed to update People.matrix_id for row_id={person_row_id}: {e}")
+        logger.warning(f"Failed to update People.matrix_id for {normalized}: {e}")
         return False, "PEOPLE_UPDATE_EXCEPTION"
 
     if response.status_code not in (200, 201):
         logger.warning(
-            f"Failed to update People.matrix_id for row_id={person_row_id}: {response.status_code} {response.text}"
+            f"Failed to update People.matrix_id for {normalized}: {response.status_code} {response.text}"
         )
         return False, "PEOPLE_UPDATE_FAILED"
 
     return True, None
-
-
-async def get_person_participation_by_row_id(person_row_id: int) -> tuple[bool, bool, str | None, dict[int, bool]]:
-    """Return participation info by People row id.
-
-    Returns (is_found, check_ok, person_name, team_memberships).
-    """
-    if person_row_id <= 0:
-        return False, True, None, {}
-
-    if person_row_id in grist_person_row_to_team_memberships:
-        return (
-            True,
-            True,
-            grist_person_row_to_person_name.get(person_row_id),
-            dict(grist_person_row_to_team_memberships.get(person_row_id, {})),
-        )
-
-    sync_ok = await sync_grist_cache(force_full=False)
-    if not sync_ok and not grist_person_row_to_team_memberships:
-        return False, False, None, {}
-
-    if person_row_id in grist_person_row_to_team_memberships:
-        return (
-            True,
-            True,
-            grist_person_row_to_person_name.get(person_row_id),
-            dict(grist_person_row_to_team_memberships.get(person_row_id, {})),
-        )
-
-    return False, True, None, {}
-
-
-async def get_person_telegram_handle_by_row_id(person_row_id: int) -> tuple[bool, str | None]:
-    """Return (check_ok, telegram_handle_or_none) for a People row id."""
-    if person_row_id <= 0:
-        return True, None
-
-    if person_row_id in grist_person_row_to_telegram_handle:
-        return True, grist_person_row_to_telegram_handle.get(person_row_id)
-
-    sync_ok = await sync_grist_cache(force_full=False)
-    if not sync_ok and not grist_person_row_to_telegram_handle:
-        return False, None
-
-    return True, grist_person_row_to_telegram_handle.get(person_row_id)
-
-
-async def get_person_matrix_id_by_row_id(person_row_id: int) -> tuple[bool, str | None]:
-    """Return (check_ok, matrix_id_or_none) for a People row id."""
-    if person_row_id <= 0:
-        return True, None
-
-    if person_row_id in grist_person_row_to_matrix_id:
-        return True, grist_person_row_to_matrix_id.get(person_row_id)
-
-    sync_ok = await sync_grist_cache(force_full=False)
-    if not sync_ok and not grist_person_row_to_matrix_id:
-        return False, None
-
-    return True, grist_person_row_to_matrix_id.get(person_row_id)
 
 
 async def check_synapse_admin_token() -> tuple[bool, str | None]:
@@ -924,7 +828,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "/hr_sync - принудительно обновить кэш Грист и показать счетчики (полезно сделать если человек был только что добавлен в Участия 2026).\n"
             "/hr_check @handle - проверить есть ли человек в Участиях 2026 и членство в командах.\n"
             "/hr_register @handle - выполнить полную регистрацию: аккаунт в чате и автодобавление в комнаты.\n"
-            "/hr_register_bez_telegi <person_row_id> - пошагово зарегистрировать участника без Telegram: подтвердить ФИО, ввести username и добавить в командные комнаты. person_row_id — это ID человека из таблицы «Человеки» в Grist.\n"
             "/hr_sync_teams @handle - перепроверить команды участника и добавить в командные комнаты (создаст комнаты при необходимости)."
         )
 
@@ -1254,227 +1157,6 @@ async def ops_register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     if created:
         lines.append(f"temp_password={temp_password}")
-
-    if failed_rooms:
-        lines.append(f"failed_rooms={', '.join(failed_rooms)}")
-
-    if failed_team_rooms:
-        lines.append(f"failed_team_rooms={', '.join(failed_team_rooms)}")
-
-    if failed_moderation_rooms:
-        lines.append(f"failed_moderation_rooms={', '.join(failed_moderation_rooms)}")
-
-    await update.message.reply_text("\n".join(lines))
-
-
-def normalize_matrix_localpart(value: str) -> str:
-    """Normalize Matrix id input to localpart.
-
-    Accepts localpart, @localpart, or full mxid @localpart:server.
-    """
-    if not isinstance(value, str):
-        return ""
-
-    raw = value.strip()
-    if not raw:
-        return ""
-
-    if raw.startswith("@"):
-        raw = raw[1:]
-
-    localpart = raw.split(":", 1)[0].strip().lower()
-    return localpart
-
-async def ops_register_bez_telegi(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Start interactive registration flow for volunteers without Telegram."""
-    if not await require_hr(update):
-        return
-
-    if not context.args:
-        await update.message.reply_text(
-            "Использование: /hr_register_bez_telegi <person_row_id>\n"
-            "Где person_row_id — это ID человека из таблицы «Человеки» в Grist."
-        )
-        return
-
-    try:
-        person_row_id = int(context.args[0])
-    except (TypeError, ValueError):
-        await update.message.reply_text("❌ person_row_id должен быть целым числом")
-        return
-
-    found, check_ok, person_name, memberships = await get_person_participation_by_row_id(person_row_id)
-    if not check_ok:
-        await update.message.reply_text("❌ Не удалось проверить данные участия")
-        return
-
-    if not found:
-        await update.message.reply_text(
-            f"❌ person_row_id {person_row_id} не найден в таблице Участия 2026"
-        )
-        return
-
-    if not memberships:
-        await update.message.reply_text(
-            f"❌ Для person_row_id {person_row_id} не найдены командные участия"
-        )
-        return
-
-    matrix_check_ok, existing_matrix_id = await get_person_matrix_id_by_row_id(person_row_id)
-    if not matrix_check_ok:
-        await update.message.reply_text("❌ Не удалось проверить matrix_id в Grist. Попробуйте позже.")
-        return
-
-    if existing_matrix_id:
-        await update.message.reply_text(
-            "❌ У этого человека уже заполнен matrix_id в Grist "
-            f"({existing_matrix_id}). Регистрация отменена."
-        )
-        return
-
-    safe_name = html.escape(person_name or "(без имени)")
-    context.user_data["hr_register_bez_telegi"] = {
-        "stage": "confirm",
-        "person_row_id": person_row_id,
-        "person_name": person_name,
-        "memberships": memberships,
-    }
-
-    await update.message.reply_text(
-        "Вы хотите зарегистрировать "
-        f"<b>{safe_name}</b>?\n\n"
-        "Ответьте: да / нет",
-        parse_mode=ParseMode.HTML,
-    )
-
-
-async def handle_hr_register_bez_telegi_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle text steps for /hr_register_bez_telegi interactive flow."""
-    state = context.user_data.get("hr_register_bez_telegi")
-    if not state:
-        return
-
-    if not await is_hr_command_user(update):
-        context.user_data.pop("hr_register_bez_telegi", None)
-        await update.message.reply_text("❌ Эта команда недоступна.")
-        return
-
-    text = (update.message.text or "").strip()
-    lowered = text.lower()
-
-    if lowered in {"/cancel", "cancel", "стоп", "нет", "no", "n"} and state.get("stage") == "confirm":
-        context.user_data.pop("hr_register_bez_telegi", None)
-        await update.message.reply_text("Операция отменена.")
-        return
-
-    if state.get("stage") == "confirm":
-        if lowered not in {"да", "yes", "y"}:
-            await update.message.reply_text("Ответьте 'да' или 'нет'.")
-            return
-
-        person_row_id = int(state["person_row_id"])
-        check_ok, tg_handle = await get_person_telegram_handle_by_row_id(person_row_id)
-        if not check_ok:
-            context.user_data.pop("hr_register_bez_telegi", None)
-            await update.message.reply_text("❌ Не удалось проверить Telegram-поле. Попробуйте позже.")
-            return
-
-        if tg_handle:
-            context.user_data.pop("hr_register_bez_telegi", None)
-            await update.message.reply_text(
-                "❌ У этого человека заполнено Telegram-поле "
-                f"(@{tg_handle}). Используйте /hr_register @handle."
-            )
-            return
-
-        state["stage"] = "await_username"
-        await update.message.reply_text(
-            "Введите желаемый Matrix username (localpart).\n"
-            "Пример: ivan.petrov"
-        )
-        return
-
-    if state.get("stage") != "await_username":
-        context.user_data.pop("hr_register_bez_telegi", None)
-        await update.message.reply_text("Операция сброшена. Запустите /hr_register_bez_telegi снова.")
-        return
-
-    username = normalize_matrix_localpart(text)
-    if not username:
-        await update.message.reply_text("❌ Неверный username. Попробуйте еще раз.")
-        return
-
-    if not re.match(r"^[a-z0-9._=\-/]+$", username):
-        await update.message.reply_text(
-            "❌ Username содержит недопустимые символы. "
-            "Разрешены: a-z, 0-9, ., _, =, -, /."
-        )
-        return
-
-    existing_status = await get_synapse_registration_status(username)
-    if existing_status == "registered":
-        await update.message.reply_text(
-            f"❌ Username '{username}' уже существует. Введите другой username."
-        )
-        return
-    if existing_status == "unknown":
-        context.user_data.pop("hr_register_bez_telegi", None)
-        await update.message.reply_text("❌ Не удалось проверить наличие username. Попробуйте позже.")
-        return
-
-    person_row_id = int(state["person_row_id"])
-    person_name = state.get("person_name")
-    memberships = dict(state.get("memberships") or {})
-
-    temp_password = secrets.token_urlsafe(12)
-    register_ok, registration_error = await register_synapse_user(username, temp_password)
-
-    if not register_ok:
-        if registration_error == "M_USER_IN_USE":
-            await update.message.reply_text(
-                f"❌ Username '{username}' уже существует. Введите другой username."
-            )
-            return
-
-        context.user_data.pop("hr_register_bez_telegi", None)
-        await update.message.reply_text(
-            f"❌ Не удалось зарегистрировать пользователя {username}: {registration_error}"
-        )
-        return
-
-    displayname_ok = True
-    if person_name:
-        displayname_ok = await set_synapse_display_name(username, person_name)
-
-    mxid = to_mxid(username)
-    people_update_ok, people_update_error = await update_grist_people_matrix_id_by_person_row(person_row_id, mxid)
-
-    is_organizer = any(memberships.values())
-    room_aliases = list(AUTO_JOIN_ROOMS)
-    if is_organizer:
-        room_aliases.append(ORGS_ROOM)
-
-    join_ok, failed_rooms = await join_user_to_rooms(username, room_aliases)
-    team_join_ok, failed_team_rooms, failed_moderation_rooms = await join_user_to_team_rooms(
-        username,
-        memberships,
-    )
-
-    context.user_data.pop("hr_register_bez_telegi", None)
-
-    lines = [
-        "✅ Участник зарегистрирован",
-        f"person_row_id={person_row_id}",
-        f"mxid={mxid}",
-        f"displayname_updated={str(displayname_ok).lower()}",
-        f"people_matrix_id_updated={str(people_update_ok).lower()}",
-        f"default_join_ok={str(join_ok).lower()}",
-        f"team_join_ok={str(team_join_ok).lower()}",
-        f"temp_password={temp_password}",
-    ]
-
-    if people_update_error:
-        lines.append(f"people_update_error={people_update_error}")
 
     if failed_rooms:
         lines.append(f"failed_rooms={', '.join(failed_rooms)}")
@@ -2159,9 +1841,7 @@ def main() -> None:
     application.add_handler(CommandHandler("hr_sync", ops_sync))
     application.add_handler(CommandHandler("hr_check", ops_check))
     application.add_handler(CommandHandler("hr_register", ops_register))
-    application.add_handler(CommandHandler("hr_register_bez_telegi", ops_register_bez_telegi))
     application.add_handler(CommandHandler("hr_sync_teams", ops_sync_teams))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_hr_register_bez_telegi_input))
     application.add_error_handler(error_handler)
 
     # Run the bot

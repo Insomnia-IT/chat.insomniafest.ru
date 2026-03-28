@@ -1703,3 +1703,1154 @@ def test_check_synapse_admin_token_unreachable(monkeypatch):
     assert len(warnings) == 1
     assert "NetworkError: httpx.ConnectError: All connection attempts failed" in warnings[0]
     assert "OSError: network is unreachable" in warnings[0]
+
+
+def test_parse_grist_bool(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    assert bot.parse_grist_bool(True) is True
+    assert bot.parse_grist_bool(1) is True
+    assert bot.parse_grist_bool(" yes ") is True
+    assert bot.parse_grist_bool("off") is False
+    assert bot.parse_grist_bool(None) is False
+
+
+def test_prune_registration_times_removes_only_stale_entries(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.user_registration_times.clear()
+    now = 10_000.0
+    stale_time = now - (bot.REGISTRATION_RATE_LIMIT * 2) - 1
+    fresh_time = now - 30
+    borderline_time = now - (bot.REGISTRATION_RATE_LIMIT * 2)
+    bot.user_registration_times.update({1: stale_time, 2: fresh_time, 3: borderline_time})
+
+    bot.prune_registration_times(now)
+
+    assert 1 not in bot.user_registration_times
+    assert bot.user_registration_times[2] == fresh_time
+    assert bot.user_registration_times[3] == borderline_time
+
+
+def test_request_with_retries_retries_then_succeeds(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    class DummyClient:
+        def __init__(self):
+            self.calls = 0
+
+        async def request(self, method, url, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                raise bot.httpx.RequestError("temporary")
+            return FakeResponse(200, {"ok": True})
+
+    sleeps = []
+
+    async def fake_sleep(delay):
+        sleeps.append(delay)
+
+    monkeypatch.setattr(bot.asyncio, "sleep", fake_sleep)
+
+    client = DummyClient()
+    response = asyncio.run(bot.request_with_retries(client, "GET", "https://example.test"))
+
+    assert response.status_code == 200
+    assert client.calls == 2
+    assert sleeps == [0.5]
+
+
+def test_request_with_retries_raises_after_last_attempt(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    class DummyClient:
+        async def request(self, method, url, **kwargs):
+            raise bot.httpx.RequestError("still failing")
+
+    sleeps = []
+
+    async def fake_sleep(delay):
+        sleeps.append(delay)
+
+    monkeypatch.setattr(bot.asyncio, "sleep", fake_sleep)
+
+    try:
+        asyncio.run(bot.request_with_retries(DummyClient(), "GET", "https://example.test"))
+        assert False, "expected RequestError"
+    except bot.httpx.RequestError:
+        pass
+
+    assert sleeps == [0.5, 1.0]
+
+
+def test_notify_owner_skips_when_owner_missing(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    monkeypatch.setattr(bot, "OWNER_TELEGRAM_ID", None)
+
+    context = DummyContext()
+
+    asyncio.run(bot.notify_owner(context, "hello"))
+
+    assert context.bot.sent == []
+
+
+def test_notify_owner_logs_send_failure(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    monkeypatch.setattr(bot, "OWNER_TELEGRAM_ID", 77)
+
+    errors = []
+
+    async def fake_send_message(chat_id, text):
+        raise RuntimeError("send failed")
+
+    def fake_error(message, *args, **kwargs):
+        errors.append(message % args if args else message)
+
+    context = DummyContext()
+    context.bot.send_message = fake_send_message
+    monkeypatch.setattr(bot.logger, "error", fake_error)
+
+    asyncio.run(bot.notify_owner(context, "hello"))
+
+    assert errors
+    assert "Failed to notify owner" in errors[0]
+
+
+def test_update_grist_people_matrix_id_failed_status(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.grist_handle_to_person_row_id.clear()
+    bot.grist_handle_to_person_row_id["alice"] = 21
+
+    async def fake_request_with_retries(client, method, url, **kwargs):
+        return FakeResponse(500, {}, text="boom")
+
+    monkeypatch.setattr(bot, "request_with_retries", fake_request_with_retries)
+
+    ok, code = asyncio.run(bot.update_grist_people_matrix_id("alice", "@alice:insomniafest.ru"))
+
+    assert ok is False
+    assert code == "PEOPLE_UPDATE_FAILED"
+
+
+def test_update_grist_people_matrix_id_exception(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.grist_handle_to_person_row_id.clear()
+    bot.grist_handle_to_person_row_id["alice"] = 21
+
+    async def fake_request_with_retries(client, method, url, **kwargs):
+        raise RuntimeError("patch failed")
+
+    monkeypatch.setattr(bot, "request_with_retries", fake_request_with_retries)
+
+    ok, code = asyncio.run(bot.update_grist_people_matrix_id("alice", "@alice:insomniafest.ru"))
+
+    assert ok is False
+    assert code == "PEOPLE_UPDATE_EXCEPTION"
+
+
+def test_get_synapse_registration_status_unknown_without_token(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    monkeypatch.setattr(bot, "SYNAPSE_ADMIN_ACCESS_TOKEN", None)
+
+    status = asyncio.run(bot.get_synapse_registration_status("alice"))
+
+    assert status == "unknown"
+
+
+def test_get_synapse_registration_status_unknown_on_unexpected_status(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    monkeypatch.setattr(bot, "SYNAPSE_ADMIN_ACCESS_TOKEN", "token")
+
+    async def fake_request_with_retries(client, method, url, **kwargs):
+        return FakeResponse(500, {}, text="oops")
+
+    monkeypatch.setattr(bot, "request_with_retries", fake_request_with_retries)
+
+    status = asyncio.run(bot.get_synapse_registration_status("alice"))
+
+    assert status == "unknown"
+
+
+def test_prepare_team_sync_target_error_paths(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    async def fake_check_failed(handle):
+        return False, False, None, {}
+
+    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_failed)
+    result = asyncio.run(bot.prepare_team_sync_target("@alice"))
+    assert result == ("", None, {}, "CHECK_FAILED")
+
+    async def fake_not_eligible(handle):
+        return False, True, None, {}
+
+    monkeypatch.setattr(bot, "check_user_eligibility", fake_not_eligible)
+    result = asyncio.run(bot.prepare_team_sync_target("@alice"))
+    assert result == ("", None, {}, "NOT_ELIGIBLE")
+
+    async def fake_eligible(handle):
+        return True, True, "Alice", {}
+
+    async def fake_get_status(username):
+        return "unknown"
+
+    monkeypatch.setattr(bot, "check_user_eligibility", fake_eligible)
+    monkeypatch.setattr(bot, "get_synapse_registration_status", fake_get_status)
+    result = asyncio.run(bot.prepare_team_sync_target("@alice"))
+    assert result == ("alice", "Alice", {}, "NOT_REGISTERED:unknown")
+
+    async def fake_registered(username):
+        return "registered"
+
+    monkeypatch.setattr(bot, "get_synapse_registration_status", fake_registered)
+    result = asyncio.run(bot.prepare_team_sync_target("@alice"))
+    assert result == ("alice", "Alice", {}, "NO_MEMBERSHIPS")
+
+
+def test_split_and_build_team_sync_message(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    team_results = [
+        {
+            "team_name": "Alpha & Beta",
+            "is_organizer": True,
+            "room_id": "!room1:insomniafest.ru",
+            "status": "already_joined",
+        },
+        {
+            "team_name": "Gamma",
+            "is_organizer": False,
+            "room_id": None,
+            "status": "joined",
+        },
+        {
+            "team_name": "Delta",
+            "is_organizer": False,
+            "room_id": None,
+            "status": "failed",
+        },
+    ]
+
+    already_joined, newly_joined, failed = bot.split_team_sync_results(team_results)
+    message = bot.build_team_sync_message(
+        team_results,
+        ["Alpha & Beta"],
+        title="TITLE",
+        already_title="ALREADY",
+        newly_title="NEW",
+        header_lines=["header"],
+    )
+
+    assert len(already_joined) == 1
+    assert "Alpha &amp; Beta" in already_joined[0]
+    assert len(newly_joined) == 1
+    assert "Gamma" in newly_joined[0]
+    assert failed == ["Delta"]
+    assert "TITLE" in message
+    assert "header" in message
+    assert "ALREADY" in message
+    assert "NEW" in message
+    assert "Не удалось добавить в комнаты: Delta" in message
+    assert "Не удалось выдать права администратора" in message
+
+
+def test_is_hr_command_user_refreshes_cache(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.ADMIN_TELEGRAM_IDS.clear()
+    bot.grist_handle_to_is_hr_now.clear()
+    bot.grist_handle_to_team_memberships.clear()
+
+    async def fake_sync_grist_cache(force_full=False):
+        bot.grist_handle_to_is_hr_now["alice"] = True
+        return True
+
+    monkeypatch.setattr(bot, "sync_grist_cache", fake_sync_grist_cache)
+
+    allowed = asyncio.run(bot.is_hr_command_user(DummyUpdate(user_id=2, username="alice")))
+
+    assert allowed is True
+
+
+def test_ops_sync_failure(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.ADMIN_TELEGRAM_IDS.clear()
+    bot.ADMIN_TELEGRAM_IDS.add(1)
+
+    async def fake_sync_grist_cache(force_full=False):
+        return False
+
+    monkeypatch.setattr(bot, "sync_grist_cache", fake_sync_grist_cache)
+
+    update = DummyUpdate(user_id=1, username="admin")
+    context = DummyContext()
+
+    asyncio.run(bot.ops_sync(update, context))
+
+    assert update.message.sent[-1]["text"] == "❌ Sync failed"
+
+
+def test_ops_check_usage(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.ADMIN_TELEGRAM_IDS.clear()
+    bot.ADMIN_TELEGRAM_IDS.add(1)
+
+    update = DummyUpdate(user_id=1, username="admin")
+    context = DummyContext(args=[])
+
+    asyncio.run(bot.ops_check(update, context))
+
+    assert update.message.sent[-1]["text"] == "Usage: /hr_check <telegram_handle>"
+
+
+def test_ops_register_usage(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.ADMIN_TELEGRAM_IDS.clear()
+    bot.ADMIN_TELEGRAM_IDS.add(1)
+
+    update = DummyUpdate(user_id=1, username="admin")
+    context = DummyContext(args=[])
+
+    asyncio.run(bot.ops_register(update, context))
+
+    assert update.message.sent[-1]["text"] == "Usage: /hr_register <telegram_handle>"
+
+
+def test_ops_sync_teams_not_registered(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.ADMIN_TELEGRAM_IDS.clear()
+    bot.ADMIN_TELEGRAM_IDS.add(1)
+
+    async def fake_prepare_team_sync_target(handle):
+        return "alice", "Alice", {1: True}, "NOT_REGISTERED:unknown"
+
+    monkeypatch.setattr(bot, "prepare_team_sync_target", fake_prepare_team_sync_target)
+
+    update = DummyUpdate(user_id=1, username="admin")
+    context = DummyContext(args=["@alice"])
+
+    asyncio.run(bot.ops_sync_teams(update, context))
+
+    assert "is not registered in Matrix yet" in update.message.sent[-1]["text"]
+
+
+def test_set_synapse_display_name_no_token(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    monkeypatch.setattr(bot, "SYNAPSE_ADMIN_ACCESS_TOKEN", None)
+
+    ok = asyncio.run(bot.set_synapse_display_name("alice", "Alice"))
+
+    assert ok is False
+
+
+def test_set_synapse_display_name_request_failure(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    monkeypatch.setattr(bot, "SYNAPSE_ADMIN_ACCESS_TOKEN", "token")
+
+    async def fake_request_with_retries(client, method, url, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(bot, "request_with_retries", fake_request_with_retries)
+
+    ok = asyncio.run(bot.set_synapse_display_name("alice", "Alice"))
+
+    assert ok is False
+
+
+def test_join_user_to_room_exception_returns_failed(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    monkeypatch.setattr(bot, "SYNAPSE_ADMIN_ACCESS_TOKEN", "token")
+
+    async def fake_request_with_retries(client, method, url, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(bot, "request_with_retries", fake_request_with_retries)
+
+    status = asyncio.run(bot.join_user_to_room("alice", "!room:insomniafest.ru"))
+
+    assert status == "failed"
+
+
+def test_post_init_raises_when_initial_sync_fails(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    async def fake_check_synapse_admin_token():
+        return True, None
+
+    async def fake_sync_grist_cache(force_full=False):
+        return False
+
+    monkeypatch.setattr(bot, "OWNER_TELEGRAM_ID", None)
+    monkeypatch.setattr(bot, "check_synapse_admin_token", fake_check_synapse_admin_token)
+    monkeypatch.setattr(bot, "sync_grist_cache", fake_sync_grist_cache)
+
+    class DummyApplication:
+        def __init__(self):
+            self.bot = DummyBot()
+
+    try:
+        asyncio.run(bot.post_init(DummyApplication()))
+        assert False, "expected RuntimeError"
+    except RuntimeError as exc:
+        assert "Initial Grist cache sync failed" in str(exc)
+
+
+def test_post_init_notifies_owner_on_startup(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    monkeypatch.setattr(bot, "OWNER_TELEGRAM_ID", 77)
+    monkeypatch.setattr(bot, "SYNAPSE_ADMIN_ACCESS_TOKEN", "token")
+    bot.grist_handle_to_record_id.clear()
+    bot.grist_handle_to_record_id["alice"] = 1
+    bot.grist_max_record_id = 55
+
+    async def fake_check_synapse_admin_token():
+        return True, None
+
+    async def fake_sync_grist_cache(force_full=False):
+        return True
+
+    class DummyApplication:
+        def __init__(self):
+            self.bot = DummyBot()
+
+    monkeypatch.setattr(bot, "check_synapse_admin_token", fake_check_synapse_admin_token)
+    monkeypatch.setattr(bot, "sync_grist_cache", fake_sync_grist_cache)
+
+    application = DummyApplication()
+    asyncio.run(bot.post_init(application))
+
+    assert len(application.bot.sent) == 1
+    assert application.bot.sent[0]["chat_id"] == 77
+    assert "Бот запущен" in application.bot.sent[0]["text"]
+    assert "Токен Synapse действителен" in application.bot.sent[0]["text"]
+
+
+def test_reset_password_eligibility_check_failed(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    update = DummyUpdate(user_id=42, username="alice")
+    context = DummyContext()
+
+    bot.user_registration_times.clear()
+
+    async def fake_check_user_eligibility(username):
+        return False, False, None, {}
+
+    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
+
+    asyncio.run(bot.reset_password(update, context))
+
+    assert len(update.message.sent) == 2
+    assert "Не удалось проверить данные" in update.message.sent[1]["text"]
+
+
+def test_reset_password_not_eligible(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    update = DummyUpdate(user_id=42, username="alice")
+    context = DummyContext()
+
+    bot.user_registration_times.clear()
+
+    async def fake_check_user_eligibility(username):
+        return False, True, None, {}
+
+    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
+
+    asyncio.run(bot.reset_password(update, context))
+
+    assert len(update.message.sent) == 2
+    assert "не найден в списке волонтеров" in update.message.sent[1]["text"].lower()
+
+
+def test_reset_password_token_missing(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    update = DummyUpdate(user_id=42, username="alice")
+    context = DummyContext()
+
+    bot.user_registration_times.clear()
+
+    async def fake_check_user_eligibility(username):
+        return True, True, "Alice", {72: False}
+
+    async def fake_reset_synapse_password(username, password):
+        return False, "RESET_TOKEN_MISSING"
+
+    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
+    monkeypatch.setattr(bot, "reset_synapse_password", fake_reset_synapse_password)
+
+    asyncio.run(bot.reset_password(update, context))
+
+    assert "временно недоступен" in update.message.sent[-1]["text"].lower()
+
+
+def test_reset_password_failure_notifies_owner(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    update = DummyUpdate(user_id=42, username="alice")
+    context = DummyContext()
+
+    bot.user_registration_times.clear()
+    notified = []
+
+    async def fake_check_user_eligibility(username):
+        return True, True, "Alice", {72: False}
+
+    async def fake_reset_synapse_password(username, password):
+        return False, "RESET_FAILED"
+
+    async def fake_notify_owner(context_obj, message):
+        notified.append(message)
+
+    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
+    monkeypatch.setattr(bot, "reset_synapse_password", fake_reset_synapse_password)
+    monkeypatch.setattr(bot, "notify_owner", fake_notify_owner)
+
+    asyncio.run(bot.reset_password(update, context))
+
+    assert "Не удалось сбросить пароль" in update.message.sent[-1]["text"]
+    assert len(notified) == 1
+    assert "reset_error=RESET_FAILED" in notified[0]
+
+
+def test_my_teams_check_failed(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    async def fake_prepare_team_sync_target(handle):
+        return "", None, {}, "CHECK_FAILED"
+
+    monkeypatch.setattr(bot, "prepare_team_sync_target", fake_prepare_team_sync_target)
+
+    update = DummyUpdate(user_id=10, username="alice")
+    context = DummyContext()
+
+    asyncio.run(bot.my_teams(update, context))
+
+    assert "Не удалось проверить данные регистрации" in update.message.sent[-1]["text"]
+
+
+def test_my_teams_no_memberships(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    async def fake_prepare_team_sync_target(handle):
+        return "alice", "Alice", {}, "NO_MEMBERSHIPS"
+
+    monkeypatch.setattr(bot, "prepare_team_sync_target", fake_prepare_team_sync_target)
+
+    update = DummyUpdate(user_id=10, username="alice")
+    context = DummyContext()
+
+    asyncio.run(bot.my_teams(update, context))
+
+    assert "Команды в Участиях 2026 для вас не найдены" in update.message.sent[-1]["text"]
+
+
+def test_ops_check_handles_check_failure(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.ADMIN_TELEGRAM_IDS.clear()
+    bot.ADMIN_TELEGRAM_IDS.add(1)
+
+    async def fake_check_user_eligibility(handle):
+        return False, False, None, {}
+
+    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
+
+    update = DummyUpdate(user_id=1, username="admin")
+    context = DummyContext(args=["@alice"])
+
+    asyncio.run(bot.ops_check(update, context))
+
+    assert update.message.sent[-1]["text"] == "❌ Eligibility check failed"
+
+
+def test_ops_register_reports_reactivation_failure(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.ADMIN_TELEGRAM_IDS.clear()
+    bot.ADMIN_TELEGRAM_IDS.add(1)
+
+    async def fake_check_user_eligibility(handle):
+        return True, True, "Alice", {72: False}
+
+    async def fake_register_synapse_user(username, password):
+        return False, "M_USER_IN_USE"
+
+    async def fake_reactivate_synapse_user(username, password):
+        return False, "BROKEN"
+
+    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
+    monkeypatch.setattr(bot, "register_synapse_user", fake_register_synapse_user)
+    monkeypatch.setattr(bot, "reactivate_synapse_user", fake_reactivate_synapse_user)
+
+    update = DummyUpdate(user_id=1, username="admin")
+    context = DummyContext(args=["@alice"])
+
+    asyncio.run(bot.ops_register(update, context))
+
+    assert "Reactivation failed for alice: BROKEN" in update.message.sent[-1]["text"]
+
+
+def test_ops_check_not_eligible(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.ADMIN_TELEGRAM_IDS.clear()
+    bot.ADMIN_TELEGRAM_IDS.add(1)
+
+    async def fake_check_user_eligibility(handle):
+        return False, True, None, {}
+
+    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
+
+    update = DummyUpdate(user_id=1, username="admin")
+    context = DummyContext(args=["@ghost"])
+
+    asyncio.run(bot.ops_check(update, context))
+
+    assert update.message.sent[-1]["text"] == "❌ Not eligible: @ghost"
+
+
+def test_ops_check_reports_no_memberships(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.ADMIN_TELEGRAM_IDS.clear()
+    bot.ADMIN_TELEGRAM_IDS.add(1)
+
+    async def fake_check_user_eligibility(handle):
+        return True, True, "Alice", {}
+
+    async def fake_get_synapse_registration_status(username):
+        return "unknown"
+
+    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
+    monkeypatch.setattr(bot, "get_synapse_registration_status", fake_get_synapse_registration_status)
+
+    update = DummyUpdate(user_id=1, username="admin")
+    context = DummyContext(args=["@alice"])
+
+    asyncio.run(bot.ops_check(update, context))
+
+    text = update.message.sent[-1]["text"]
+    assert "Регистрация в Matrix: не удалось определить" in text
+    assert "Команды: не указаны" in text
+
+
+def test_ops_register_check_failed(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.ADMIN_TELEGRAM_IDS.clear()
+    bot.ADMIN_TELEGRAM_IDS.add(1)
+
+    async def fake_check_user_eligibility(handle):
+        return False, False, None, {}
+
+    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
+
+    update = DummyUpdate(user_id=1, username="admin")
+    context = DummyContext(args=["@alice"])
+
+    asyncio.run(bot.ops_register(update, context))
+
+    assert update.message.sent[-1]["text"] == "❌ Eligibility check failed"
+
+
+def test_ops_register_not_eligible(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.ADMIN_TELEGRAM_IDS.clear()
+    bot.ADMIN_TELEGRAM_IDS.add(1)
+
+    async def fake_check_user_eligibility(handle):
+        return False, True, None, {}
+
+    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
+
+    update = DummyUpdate(user_id=1, username="admin")
+    context = DummyContext(args=["@alice"])
+
+    asyncio.run(bot.ops_register(update, context))
+
+    assert update.message.sent[-1]["text"] == "❌ Not eligible: @alice"
+
+
+def test_ops_register_registration_failed(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.ADMIN_TELEGRAM_IDS.clear()
+    bot.ADMIN_TELEGRAM_IDS.add(1)
+
+    async def fake_check_user_eligibility(handle):
+        return True, True, "Alice", {72: False}
+
+    async def fake_register_synapse_user(username, password):
+        return False, "REGISTER_FAILED"
+
+    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
+    monkeypatch.setattr(bot, "register_synapse_user", fake_register_synapse_user)
+
+    update = DummyUpdate(user_id=1, username="admin")
+    context = DummyContext(args=["@alice"])
+
+    asyncio.run(bot.ops_register(update, context))
+
+    assert update.message.sent[-1]["text"] == "❌ Registration failed for alice: REGISTER_FAILED"
+
+
+def test_ops_register_account_active_path_reports_existing(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.ADMIN_TELEGRAM_IDS.clear()
+    bot.ADMIN_TELEGRAM_IDS.add(1)
+
+    async def fake_check_user_eligibility(handle):
+        return True, True, "Alice", {72: False}
+
+    async def fake_register_synapse_user(username, password):
+        return False, "M_USER_IN_USE"
+
+    async def fake_reactivate_synapse_user(username, password):
+        return False, "ACCOUNT_ACTIVE"
+
+    async def fake_set_synapse_display_name(username, display_name):
+        return True
+
+    async def fake_join_user_to_rooms(username, rooms):
+        return True, []
+
+    async def fake_join_user_to_team_rooms(username, memberships):
+        return True, [], []
+
+    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
+    monkeypatch.setattr(bot, "register_synapse_user", fake_register_synapse_user)
+    monkeypatch.setattr(bot, "reactivate_synapse_user", fake_reactivate_synapse_user)
+    monkeypatch.setattr(bot, "set_synapse_display_name", fake_set_synapse_display_name)
+    monkeypatch.setattr(bot, "join_user_to_rooms", fake_join_user_to_rooms)
+    monkeypatch.setattr(bot, "join_user_to_team_rooms", fake_join_user_to_team_rooms)
+
+    update = DummyUpdate(user_id=1, username="admin")
+    context = DummyContext(args=["@alice"])
+
+    asyncio.run(bot.ops_register(update, context))
+
+    text = update.message.sent[-1]["text"]
+    assert "created=false" in text
+    assert "reactivated=false" in text
+    assert "temp_password=" not in text
+
+
+def test_ops_register_reactivation_token_missing_path_reports_existing(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.ADMIN_TELEGRAM_IDS.clear()
+    bot.ADMIN_TELEGRAM_IDS.add(1)
+
+    async def fake_check_user_eligibility(handle):
+        return True, True, None, {72: True}
+
+    async def fake_register_synapse_user(username, password):
+        return False, "M_USER_IN_USE"
+
+    async def fake_reactivate_synapse_user(username, password):
+        return False, "REACTIVATION_TOKEN_MISSING"
+
+    async def fake_join_user_to_rooms(username, rooms):
+        return True, []
+
+    async def fake_join_user_to_team_rooms(username, memberships):
+        return True, [], []
+
+    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
+    monkeypatch.setattr(bot, "register_synapse_user", fake_register_synapse_user)
+    monkeypatch.setattr(bot, "reactivate_synapse_user", fake_reactivate_synapse_user)
+    monkeypatch.setattr(bot, "join_user_to_rooms", fake_join_user_to_rooms)
+    monkeypatch.setattr(bot, "join_user_to_team_rooms", fake_join_user_to_team_rooms)
+
+    update = DummyUpdate(user_id=1, username="admin")
+    context = DummyContext(args=["@alice"])
+
+    asyncio.run(bot.ops_register(update, context))
+
+    text = update.message.sent[-1]["text"]
+    assert "person_name=-" in text
+    assert "created=false" in text
+    assert "reactivated=false" in text
+    assert "temp_password=" not in text
+
+
+def test_ops_sync_teams_check_failed(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.ADMIN_TELEGRAM_IDS.clear()
+    bot.ADMIN_TELEGRAM_IDS.add(1)
+
+    async def fake_prepare_team_sync_target(handle):
+        return "", None, {}, "CHECK_FAILED"
+
+    monkeypatch.setattr(bot, "prepare_team_sync_target", fake_prepare_team_sync_target)
+
+    update = DummyUpdate(user_id=1, username="admin")
+    context = DummyContext(args=["@alice"])
+
+    asyncio.run(bot.ops_sync_teams(update, context))
+
+    assert update.message.sent[-1]["text"] == "❌ Eligibility check failed"
+
+
+def test_ops_sync_teams_not_eligible(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.ADMIN_TELEGRAM_IDS.clear()
+    bot.ADMIN_TELEGRAM_IDS.add(1)
+
+    async def fake_prepare_team_sync_target(handle):
+        return "", None, {}, "NOT_ELIGIBLE"
+
+    monkeypatch.setattr(bot, "prepare_team_sync_target", fake_prepare_team_sync_target)
+
+    update = DummyUpdate(user_id=1, username="admin")
+    context = DummyContext(args=["@ghost"])
+
+    asyncio.run(bot.ops_sync_teams(update, context))
+
+    assert update.message.sent[-1]["text"] == "❌ Not eligible: @ghost"
+
+
+def test_ops_sync_teams_no_memberships(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.ADMIN_TELEGRAM_IDS.clear()
+    bot.ADMIN_TELEGRAM_IDS.add(1)
+
+    async def fake_prepare_team_sync_target(handle):
+        return "alice", "Alice", {}, "NO_MEMBERSHIPS"
+
+    monkeypatch.setattr(bot, "prepare_team_sync_target", fake_prepare_team_sync_target)
+
+    update = DummyUpdate(user_id=1, username="admin")
+    context = DummyContext(args=["@alice"])
+
+    asyncio.run(bot.ops_sync_teams(update, context))
+
+    assert update.message.sent[-1]["text"] == "ℹ️ No team memberships found for @alice."
+
+
+def test_check_user_eligibility_empty_handle(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    eligible, check_ok, person_name, memberships = asyncio.run(bot.check_user_eligibility(""))
+
+    assert eligible is False
+    assert check_ok is True
+    assert person_name is None
+    assert memberships == {}
+
+
+def test_check_user_eligibility_exception(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    async def fake_sync_grist_cache(force_full=False):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(bot, "sync_grist_cache", fake_sync_grist_cache)
+
+    eligible, check_ok, person_name, memberships = asyncio.run(bot.check_user_eligibility("alice"))
+
+    assert eligible is False
+    assert check_ok is False
+    assert person_name is None
+    assert memberships == {}
+
+
+def test_check_user_eligibility_uses_stale_cache_when_sync_fails(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.grist_handle_to_record_id.clear()
+    bot.grist_handle_to_person_name.clear()
+    bot.grist_handle_to_team_memberships.clear()
+    bot.grist_handle_to_record_id["alice"] = 123
+    bot.grist_handle_to_person_name["alice"] = "Alice"
+    bot.grist_handle_to_team_memberships["alice"] = {7: True}
+
+    async def fake_sync_grist_cache(force_full=False):
+        return False
+
+    monkeypatch.setattr(bot, "sync_grist_cache", fake_sync_grist_cache)
+
+    eligible, check_ok, person_name, memberships = asyncio.run(bot.check_user_eligibility("alice"))
+
+    assert eligible is True
+    assert check_ok is True
+    assert person_name == "Alice"
+    assert memberships == {7: True}
+
+
+def test_register_synapse_user_nonce_request_failed(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    async def fake_request_with_retries(client, method, url, **kwargs):
+        return FakeResponse(500, {}, text="no nonce")
+
+    monkeypatch.setattr(bot, "request_with_retries", fake_request_with_retries)
+
+    ok, code = asyncio.run(bot.register_synapse_user("alice", "pwd"))
+
+    assert ok is False
+    assert code == "NONCE_REQUEST_FAILED"
+
+
+def test_register_synapse_user_register_failed(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    async def fake_request_with_retries(client, method, url, **kwargs):
+        return FakeResponse(200, {"nonce": "abc"})
+
+    async def fake_post(self, url, **kwargs):
+        return FakeResponse(500, {}, text="broken")
+
+    monkeypatch.setattr(bot, "request_with_retries", fake_request_with_retries)
+    monkeypatch.setattr(bot.httpx.AsyncClient, "post", fake_post)
+
+    ok, code = asyncio.run(bot.register_synapse_user("alice", "pwd"))
+
+    assert ok is False
+    assert code == "REGISTER_FAILED"
+
+
+def test_register_synapse_user_stale_nonce_exhausted(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    async def fake_request_with_retries(client, method, url, **kwargs):
+        return FakeResponse(200, {"nonce": "abc"})
+
+    async def fake_post(self, url, **kwargs):
+        return FakeResponse(400, {"errcode": "M_UNKNOWN"}, text="unrecognised nonce")
+
+    monkeypatch.setattr(bot, "request_with_retries", fake_request_with_retries)
+    monkeypatch.setattr(bot.httpx.AsyncClient, "post", fake_post)
+
+    ok, code = asyncio.run(bot.register_synapse_user("alice", "pwd"))
+
+    assert ok is False
+    assert code == "REGISTER_FAILED"
+
+
+def test_reactivate_synapse_user_no_token(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    monkeypatch.setattr(bot, "SYNAPSE_ADMIN_ACCESS_TOKEN", None)
+
+    ok, code = asyncio.run(bot.reactivate_synapse_user("alice", "pwd"))
+
+    assert ok is False
+    assert code == "REACTIVATION_TOKEN_MISSING"
+
+
+def test_reactivate_synapse_user_lookup_failed(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    monkeypatch.setattr(bot, "SYNAPSE_ADMIN_ACCESS_TOKEN", "token")
+
+    async def fake_request_with_retries(client, method, url, **kwargs):
+        return FakeResponse(404, {}, text="not found")
+
+    monkeypatch.setattr(bot, "request_with_retries", fake_request_with_retries)
+
+    ok, code = asyncio.run(bot.reactivate_synapse_user("alice", "pwd"))
+
+    assert ok is False
+    assert code == "USER_LOOKUP_FAILED"
+
+
+def test_reactivate_synapse_user_reactivation_failed(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    monkeypatch.setattr(bot, "SYNAPSE_ADMIN_ACCESS_TOKEN", "token")
+
+    responses = [
+        FakeResponse(200, {"deactivated": True}),
+        FakeResponse(500, {}, text="broken"),
+    ]
+
+    async def fake_request_with_retries(client, method, url, **kwargs):
+        return responses.pop(0)
+
+    monkeypatch.setattr(bot, "request_with_retries", fake_request_with_retries)
+
+    ok, code = asyncio.run(bot.reactivate_synapse_user("alice", "pwd"))
+
+    assert ok is False
+    assert code == "REACTIVATION_FAILED"
+
+
+def test_reset_synapse_password_exception(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    monkeypatch.setattr(bot, "SYNAPSE_ADMIN_ACCESS_TOKEN", "token")
+
+    async def fake_request_with_retries(client, method, url, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(bot, "request_with_retries", fake_request_with_retries)
+
+    ok, code = asyncio.run(bot.reset_synapse_password("alice", "pwd"))
+
+    assert ok is False
+    assert code == "RESET_EXCEPTION"
+
+
+def test_set_synapse_display_name_empty_is_noop(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    ok = asyncio.run(bot.set_synapse_display_name("alice", ""))
+
+    assert ok is True
+
+
+def test_set_synapse_display_name_failed_status(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    monkeypatch.setattr(bot, "SYNAPSE_ADMIN_ACCESS_TOKEN", "token")
+
+    async def fake_request_with_retries(client, method, url, **kwargs):
+        return FakeResponse(500, {}, text="broken")
+
+    monkeypatch.setattr(bot, "request_with_retries", fake_request_with_retries)
+
+    ok = asyncio.run(bot.set_synapse_display_name("alice", "Alice"))
+
+    assert ok is False
+
+
+def test_resolve_room_alias_non_200(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    monkeypatch.setattr(bot, "SYNAPSE_ADMIN_ACCESS_TOKEN", "token")
+
+    async def fake_request_with_retries(client, method, url, **kwargs):
+        return FakeResponse(404, {}, text="missing")
+
+    monkeypatch.setattr(bot, "request_with_retries", fake_request_with_retries)
+
+    room_id = asyncio.run(bot.resolve_room_alias("#team-1:insomniafest.ru"))
+
+    assert room_id is None
+
+
+def test_resolve_room_alias_exception(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    monkeypatch.setattr(bot, "SYNAPSE_ADMIN_ACCESS_TOKEN", "token")
+
+    async def fake_request_with_retries(client, method, url, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(bot, "request_with_retries", fake_request_with_retries)
+
+    room_id = asyncio.run(bot.resolve_room_alias("#team-1:insomniafest.ru"))
+
+    assert room_id is None
+
+
+def test_create_team_room_no_token(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    monkeypatch.setattr(bot, "SYNAPSE_ADMIN_ACCESS_TOKEN", None)
+
+    room_id = asyncio.run(bot.create_team_room(1, "Alpha"))
+
+    assert room_id is None
+
+
+def test_create_team_room_success(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    monkeypatch.setattr(bot, "SYNAPSE_ADMIN_ACCESS_TOKEN", "token")
+
+    async def fake_request_with_retries(client, method, url, **kwargs):
+        return FakeResponse(200, {"room_id": "!new:insomniafest.ru"})
+
+    monkeypatch.setattr(bot, "request_with_retries", fake_request_with_retries)
+
+    room_id = asyncio.run(bot.create_team_room(1, "Alpha"))
+
+    assert room_id == "!new:insomniafest.ru"
+
+
+def test_create_team_room_failure_without_fallback(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    monkeypatch.setattr(bot, "SYNAPSE_ADMIN_ACCESS_TOKEN", "token")
+
+    async def fake_request_with_retries(client, method, url, **kwargs):
+        return FakeResponse(500, {}, text="broken")
+
+    async def fake_resolve_room_alias(alias):
+        return None
+
+    monkeypatch.setattr(bot, "request_with_retries", fake_request_with_retries)
+    monkeypatch.setattr(bot, "resolve_room_alias", fake_resolve_room_alias)
+
+    room_id = asyncio.run(bot.create_team_room(1, "Alpha"))
+
+    assert room_id is None
+
+
+def test_ensure_team_room_returns_existing(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    async def fake_resolve_room_alias(alias):
+        return "!existing:insomniafest.ru"
+
+    async def fake_create_team_room(team_id, team_name):
+        raise AssertionError("create_team_room should not be called")
+
+    monkeypatch.setattr(bot, "resolve_room_alias", fake_resolve_room_alias)
+    monkeypatch.setattr(bot, "create_team_room", fake_create_team_room)
+
+    room_id = asyncio.run(bot.ensure_team_room(1, "Alpha"))
+
+    assert room_id == "!existing:insomniafest.ru"
+
+
+def test_set_room_moderator_no_token(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    monkeypatch.setattr(bot, "SYNAPSE_ADMIN_ACCESS_TOKEN", None)
+
+    ok = asyncio.run(bot.set_room_moderator("!room:insomniafest.ru", "@alice:insomniafest.ru"))
+
+    assert ok is False
+
+
+def test_set_room_moderator_failed_put(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    monkeypatch.setattr(bot, "SYNAPSE_ADMIN_ACCESS_TOKEN", "token")
+
+    responses = [
+        FakeResponse(200, {"users": {}}),
+        FakeResponse(500, {}, text="broken"),
+    ]
+
+    async def fake_request_with_retries(client, method, url, **kwargs):
+        return responses.pop(0)
+
+    monkeypatch.setattr(bot, "request_with_retries", fake_request_with_retries)
+
+    ok = asyncio.run(bot.set_room_moderator("!room:insomniafest.ru", "@alice:insomniafest.ru"))
+
+    assert ok is False
+
+
+def test_get_room_parent_spaces_no_token(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    monkeypatch.setattr(bot, "SYNAPSE_ADMIN_ACCESS_TOKEN", None)
+
+    spaces = asyncio.run(bot.get_room_parent_spaces("!room:insomniafest.ru"))
+
+    assert spaces == []
+
+
+def test_get_room_parent_spaces_non_200(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    monkeypatch.setattr(bot, "SYNAPSE_ADMIN_ACCESS_TOKEN", "token")
+
+    async def fake_request_with_retries(client, method, url, **kwargs):
+        return FakeResponse(500, {}, text="broken")
+
+    monkeypatch.setattr(bot, "request_with_retries", fake_request_with_retries)
+
+    spaces = asyncio.run(bot.get_room_parent_spaces("!room:insomniafest.ru"))
+
+    assert spaces == []

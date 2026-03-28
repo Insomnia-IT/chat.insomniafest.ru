@@ -924,8 +924,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "/hr_sync - принудительно обновить кэш Грист и показать счетчики (полезно сделать если человек был только что добавлен в Участия 2026).\n"
             "/hr_check @handle - проверить есть ли человек в Участиях 2026 и членство в командах.\n"
             "/hr_register @handle - выполнить полную регистрацию: аккаунт в чате и автодобавление в комнаты.\n"
-            "/hr_register_person <person_row_id> <matrix_localpart> - зарегистрировать участника без Telegram по person_row_id из Grist и добавить в командные комнаты.\n"
-            "/hr_register_bez_telegi <person_row_id> - пошагово зарегистрировать участника без Telegram: подтвердить ФИО, ввести username и добавить в командные комнаты.\n"
+            "/hr_register_bez_telegi <person_row_id> - пошагово зарегистрировать участника без Telegram: подтвердить ФИО, ввести username и добавить в командные комнаты. person_row_id — это ID человека из таблицы «Человеки» в Grist.\n"
             "/hr_sync_teams @handle - перепроверить команды участника и добавить в командные комнаты (создаст комнаты при необходимости)."
         )
 
@@ -1286,152 +1285,39 @@ def normalize_matrix_localpart(value: str) -> str:
     localpart = raw.split(":", 1)[0].strip().lower()
     return localpart
 
-
-async def ops_register_person(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Register a participant without Telegram by Grist person_row_id."""
-    if not await require_hr(update):
-        return
-
-    if len(context.args) < 2:
-        await update.message.reply_text("Usage: /hr_register_person <person_row_id> <matrix_localpart>")
-        return
-
-    try:
-        person_row_id = int(context.args[0])
-    except (TypeError, ValueError):
-        await update.message.reply_text("❌ person_row_id must be an integer")
-        return
-
-    username = normalize_matrix_localpart(context.args[1])
-    if not username:
-        await update.message.reply_text("❌ matrix_localpart is invalid")
-        return
-
-    found, check_ok, person_name, memberships = await get_person_participation_by_row_id(person_row_id)
-    if not check_ok:
-        await update.message.reply_text("❌ Eligibility check failed")
-        return
-
-    if not found:
-        await update.message.reply_text(f"❌ person_row_id {person_row_id} not found in Participations")
-        return
-
-    if not memberships:
-        await update.message.reply_text(f"❌ person_row_id {person_row_id} has no team memberships")
-        return
-
-    matrix_check_ok, existing_matrix_id = await get_person_matrix_id_by_row_id(person_row_id)
-    if not matrix_check_ok:
-        await update.message.reply_text("❌ Не удалось проверить matrix_id в Grist. Попробуйте позже.")
-        return
-
-    if existing_matrix_id:
-        await update.message.reply_text(
-            "❌ У этого человека уже заполнен matrix_id в Grist "
-            f"({existing_matrix_id}). Регистрация отменена."
-        )
-        return
-
-    temp_password = secrets.token_urlsafe(12)
-    is_organizer = any(memberships.values())
-
-    register_ok, registration_error = await register_synapse_user(username, temp_password)
-    reactivated = False
-
-    if not register_ok and registration_error == "M_USER_IN_USE":
-        reactivation_ok, reactivation_error = await reactivate_synapse_user(username, temp_password)
-        if reactivation_ok:
-            register_ok = True
-            registration_error = None
-            reactivated = True
-        elif reactivation_error not in ("ACCOUNT_ACTIVE", "REACTIVATION_TOKEN_MISSING"):
-            await update.message.reply_text(
-                f"❌ Reactivation failed for {username}: {reactivation_error}"
-            )
-            return
-
-    created = register_ok and not reactivated
-    if not register_ok and registration_error != "M_USER_IN_USE":
-        await update.message.reply_text(
-            f"❌ Registration failed for {username}: {registration_error}"
-        )
-        return
-
-    displayname_ok = True
-    if person_name:
-        displayname_ok = await set_synapse_display_name(username, person_name)
-
-    mxid = to_mxid(username)
-    people_update_ok, people_update_error = await update_grist_people_matrix_id_by_person_row(person_row_id, mxid)
-
-    room_aliases = list(AUTO_JOIN_ROOMS)
-    if is_organizer:
-        room_aliases.append(ORGS_ROOM)
-
-    join_ok, failed_rooms = await join_user_to_rooms(username, room_aliases)
-    team_join_ok, failed_team_rooms, failed_moderation_rooms = await join_user_to_team_rooms(
-        username,
-        memberships,
-    )
-
-    lines = [
-        "🧪 Admin person registration",
-        f"person_row_id={person_row_id}",
-        f"handle={username}",
-        f"mxid={mxid}",
-        f"person_name={person_name or '-'}",
-        f"created={str(created).lower()}",
-        f"reactivated={str(reactivated).lower()}",
-        f"displayname_updated={str(displayname_ok).lower()}",
-        f"people_matrix_id_updated={str(people_update_ok).lower()}",
-        f"default_join_ok={str(join_ok).lower()}",
-        f"team_join_ok={str(team_join_ok).lower()}",
-    ]
-
-    if created:
-        lines.append(f"temp_password={temp_password}")
-
-    if people_update_error:
-        lines.append(f"people_update_error={people_update_error}")
-
-    if failed_rooms:
-        lines.append(f"failed_rooms={', '.join(failed_rooms)}")
-
-    if failed_team_rooms:
-        lines.append(f"failed_team_rooms={', '.join(failed_team_rooms)}")
-
-    if failed_moderation_rooms:
-        lines.append(f"failed_moderation_rooms={', '.join(failed_moderation_rooms)}")
-
-    await update.message.reply_text("\n".join(lines))
-
-
 async def ops_register_bez_telegi(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Start interactive registration flow for volunteers without Telegram."""
     if not await require_hr(update):
         return
 
     if not context.args:
-        await update.message.reply_text("Usage: /hr_register_bez_telegi <person_row_id>")
+        await update.message.reply_text(
+            "Использование: /hr_register_bez_telegi <person_row_id>\n"
+            "Где person_row_id — это ID человека из таблицы «Человеки» в Grist."
+        )
         return
 
     try:
         person_row_id = int(context.args[0])
     except (TypeError, ValueError):
-        await update.message.reply_text("❌ person_row_id must be an integer")
+        await update.message.reply_text("❌ person_row_id должен быть целым числом")
         return
 
     found, check_ok, person_name, memberships = await get_person_participation_by_row_id(person_row_id)
     if not check_ok:
-        await update.message.reply_text("❌ Eligibility check failed")
+        await update.message.reply_text("❌ Не удалось проверить данные участия")
         return
 
     if not found:
-        await update.message.reply_text(f"❌ person_row_id {person_row_id} not found in Participations")
+        await update.message.reply_text(
+            f"❌ person_row_id {person_row_id} не найден в таблице Участия 2026"
+        )
         return
 
     if not memberships:
-        await update.message.reply_text(f"❌ person_row_id {person_row_id} has no team memberships")
+        await update.message.reply_text(
+            f"❌ Для person_row_id {person_row_id} не найдены командные участия"
+        )
         return
 
     matrix_check_ok, existing_matrix_id = await get_person_matrix_id_by_row_id(person_row_id)
@@ -1552,7 +1438,7 @@ async def handle_hr_register_bez_telegi_input(update: Update, context: ContextTy
 
         context.user_data.pop("hr_register_bez_telegi", None)
         await update.message.reply_text(
-            f"❌ Registration failed for {username}: {registration_error}"
+            f"❌ Не удалось зарегистрировать пользователя {username}: {registration_error}"
         )
         return
 
@@ -2273,7 +2159,6 @@ def main() -> None:
     application.add_handler(CommandHandler("hr_sync", ops_sync))
     application.add_handler(CommandHandler("hr_check", ops_check))
     application.add_handler(CommandHandler("hr_register", ops_register))
-    application.add_handler(CommandHandler("hr_register_person", ops_register_person))
     application.add_handler(CommandHandler("hr_register_bez_telegi", ops_register_bez_telegi))
     application.add_handler(CommandHandler("hr_sync_teams", ops_sync_teams))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_hr_register_bez_telegi_input))

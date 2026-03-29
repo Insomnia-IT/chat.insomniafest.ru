@@ -79,9 +79,13 @@ grist_handle_to_person_name = {}
 grist_handle_to_team_memberships = {}
 grist_handle_to_is_hr_now = {}
 grist_handle_to_person_row_id = {}
+grist_person_row_to_person_name = {}
+grist_person_row_to_team_memberships = {}
+grist_matrix_id_to_person_row_id = {}
 grist_team_id_to_name = {}
 grist_max_record_id = 0
 grist_last_full_sync = 0.0
+grist_people_last_full_sync = 0.0
 
 def prune_registration_times(now: float) -> None:
     """Drop old rate-limit entries to keep memory usage bounded."""
@@ -124,6 +128,35 @@ def normalize_telegram_handle(handle) -> str:
         return ""
 
     return handle.strip().lstrip('@').lower()
+
+
+def is_matrix_id(value) -> bool:
+    """Return True when value looks like a full Matrix ID (@localpart:server)."""
+    if not isinstance(value, str):
+        return False
+    text = value.strip()
+    return text.startswith('@') and ':' in text
+
+
+def normalize_matrix_id(value) -> str:
+    """Normalize Matrix ID for case-insensitive matching."""
+    if not isinstance(value, str):
+        return ""
+    text = value.strip().lower()
+    if not text.startswith('@'):
+        return ""
+    if ':' not in text:
+        return ""
+    return text
+
+
+def matrix_localpart_from_id(matrix_id: str) -> str:
+    """Extract Matrix localpart from full Matrix ID."""
+    normalized = normalize_matrix_id(matrix_id)
+    if not normalized:
+        return ""
+    localpart, _, _ = normalized[1:].partition(':')
+    return localpart
 
 
 def parse_grist_ref_id(value) -> int | None:
@@ -211,6 +244,67 @@ async def fetch_grist_teams_via_records_api() -> list:
     return data.get("records", [])
 
 
+async def fetch_grist_people_via_records_api() -> list:
+    """Fetch people records from Grist People table."""
+    url = f"https://grist.insomniafest.ru/api/docs/{GRIST_DOC_ID}/tables/{GRIST_PEOPLE_TABLE_ID}/records"
+    headers = {
+        "Authorization": f"Bearer {GRIST_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+        response = await request_with_retries(
+            client,
+            "GET",
+            url,
+            headers=headers,
+        )
+
+    if response.status_code != 200:
+        raise RuntimeError(f"Grist people API error: {response.status_code} {response.text}")
+
+    data = response.json()
+    return data.get("records", [])
+
+
+async def sync_grist_people_matrix_cache(force_full: bool = False) -> bool:
+    """Sync Matrix ID -> person row mapping from Grist People table."""
+    global grist_people_last_full_sync
+
+    async with grist_cache_lock:
+        now = time.time()
+        if (
+            not force_full
+            and grist_matrix_id_to_person_row_id
+            and (now - grist_people_last_full_sync) < GRIST_CACHE_FULL_SYNC_INTERVAL
+        ):
+            return True
+
+        try:
+            people_records = await fetch_grist_people_via_records_api()
+        except Exception as e:
+            logger.warning(f"Failed to sync Grist people cache: {e}")
+            return False
+
+        grist_matrix_id_to_person_row_id.clear()
+
+        for record in people_records:
+            fields = record.get("fields", {})
+            person_row_id = fields.get("id")
+            if person_row_id is None:
+                person_row_id = record.get("id")
+            matrix_id = normalize_matrix_id(fields.get("matrix_id"))
+
+            person_row_id = parse_grist_ref_id(person_row_id)
+            if person_row_id is None or not matrix_id:
+                continue
+
+            grist_matrix_id_to_person_row_id[matrix_id] = person_row_id
+
+        grist_people_last_full_sync = now
+        return True
+
+
 async def sync_grist_cache(force_full: bool = False) -> bool:
     """Sync eligibility cache from Grist records API."""
     global grist_max_record_id, grist_last_full_sync
@@ -241,6 +335,8 @@ async def sync_grist_cache(force_full: bool = False) -> bool:
         grist_handle_to_team_memberships.clear()
         grist_handle_to_is_hr_now.clear()
         grist_handle_to_person_row_id.clear()
+        grist_person_row_to_person_name.clear()
+        grist_person_row_to_team_memberships.clear()
         grist_team_id_to_name.clear()
         grist_max_record_id = 0
 
@@ -276,33 +372,46 @@ async def sync_grist_cache(force_full: bool = False) -> bool:
             except (TypeError, ValueError):
                 continue
 
-            normalized = normalize_telegram_handle(telegram2)
-            if not normalized:
-                continue
-
-            grist_handle_to_record_id[normalized] = record_id
-            if isinstance(person_name, str) and person_name.strip():
-                grist_handle_to_person_name[normalized] = person_name.strip()
-            else:
-                grist_handle_to_person_name.pop(normalized, None)
-
-            if is_hr_now:
-                grist_handle_to_is_hr_now[normalized] = True
-
             if person_row_id is not None:
-                grist_handle_to_person_row_id[normalized] = person_row_id
+                if isinstance(person_name, str) and person_name.strip():
+                    grist_person_row_to_person_name[person_row_id] = person_name.strip()
 
-            try:
-                if team_id is None:
-                    raise ValueError("empty team ref")
-                memberships = grist_handle_to_team_memberships.setdefault(normalized, {})
-                is_organizer = (
-                    isinstance(role_code, str)
-                    and role_code.strip().upper() == "ORGANIZER"
-                )
-                memberships[team_id] = memberships.get(team_id, False) or is_organizer
-            except (TypeError, ValueError):
-                pass
+                try:
+                    if team_id is not None:
+                        row_memberships = grist_person_row_to_team_memberships.setdefault(person_row_id, {})
+                        is_organizer = (
+                            isinstance(role_code, str)
+                            and role_code.strip().upper() == "ORGANIZER"
+                        )
+                        row_memberships[team_id] = row_memberships.get(team_id, False) or is_organizer
+                except (TypeError, ValueError):
+                    pass
+
+            normalized = normalize_telegram_handle(telegram2)
+            if normalized:
+                grist_handle_to_record_id[normalized] = record_id
+                if isinstance(person_name, str) and person_name.strip():
+                    grist_handle_to_person_name[normalized] = person_name.strip()
+                else:
+                    grist_handle_to_person_name.pop(normalized, None)
+
+                if is_hr_now:
+                    grist_handle_to_is_hr_now[normalized] = True
+
+                if person_row_id is not None:
+                    grist_handle_to_person_row_id[normalized] = person_row_id
+
+                try:
+                    if team_id is None:
+                        raise ValueError("empty team ref")
+                    memberships = grist_handle_to_team_memberships.setdefault(normalized, {})
+                    is_organizer = (
+                        isinstance(role_code, str)
+                        and role_code.strip().upper() == "ORGANIZER"
+                    )
+                    memberships[team_id] = memberships.get(team_id, False) or is_organizer
+                except (TypeError, ValueError):
+                    pass
 
             if record_id > grist_max_record_id:
                 grist_max_record_id = record_id
@@ -826,9 +935,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "🔐 Команды HR\n\n"
             "(Все данные бот берет из таблицы Участия 2026 в Гристе)\n\n"
             "/hr_sync - принудительно обновить кэш Грист и показать счетчики (полезно сделать если человек был только что добавлен в Участия 2026).\n"
-            "/hr_check @телеграм_ник - проверить есть ли человек в Участиях 2026 и членство в командах.\n"
-            "/hr_register @телеграм_ник - выполнить полную регистрацию: аккаунт в чате и автодобавление в комнаты.\n"
-            "/hr_sync_teams @телеграм_ник - перепроверить команды участника и добавить в командные комнаты (создаст комнаты при необходимости)."
+            "/hr_check @telegram / @matrix_id - проверить есть ли человек в Участиях 2026 и членство в командах.\n"
+            "/hr_register @telegram - выполнить полную регистрацию: аккаунт в чате и автодобавление в комнаты.\n"
+            "/hr_sync_teams @telegram / @matrix_id - перепроверить команды участника и добавить в командные комнаты (создаст комнаты при необходимости)."
         )
 
     await update.message.reply_text(message)
@@ -847,7 +956,11 @@ async def prepare_team_sync_target(handle: str) -> tuple[str, str | None, dict[i
     if not eligible:
         return "", None, {}, "NOT_ELIGIBLE"
 
-    normalized_handle = normalize_telegram_handle(handle)
+    normalized_handle = (
+        matrix_localpart_from_id(handle)
+        if is_matrix_id(handle)
+        else normalize_telegram_handle(handle)
+    )
     registration_status = await get_synapse_registration_status(normalized_handle)
     if registration_status != "registered":
         return normalized_handle, person_name, memberships, f"NOT_REGISTERED:{registration_status}"
@@ -1058,7 +1171,8 @@ async def ops_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(f"❌ Участник не найден: {handle}")
         return
 
-    normalized_handle = normalize_telegram_handle(handle)
+    is_matrix_lookup = is_matrix_id(handle)
+    normalized_handle = matrix_localpart_from_id(handle) if is_matrix_lookup else normalize_telegram_handle(handle)
     registration_status = await get_synapse_registration_status(normalized_handle)
     registration_status_ru = {
         "registered": "уже зарегистрирован",
@@ -1068,7 +1182,11 @@ async def ops_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     lines = [
         "✅ Участник найден в списке Участий 2026",
-        f"Telegram: @{normalized_handle}",
+        (
+            f"Matrix ID: {normalize_matrix_id(handle)}"
+            if is_matrix_lookup
+            else f"Telegram: @{normalized_handle}"
+        ),
         f"Имя: {person_name or '-'}",
         f"Регистрация в Matrix: {registration_status_ru}",
     ]
@@ -1231,6 +1349,31 @@ async def check_user_eligibility(telegram_handle: str) -> tuple[bool, bool, str 
         if not telegram_handle:
             logger.warning("Empty telegram handle provided")
             return False, True, None, {}
+
+        if is_matrix_id(telegram_handle):
+            matrix_id = normalize_matrix_id(telegram_handle)
+            if not matrix_id:
+                logger.warning("Invalid Matrix ID provided: %s", telegram_handle)
+                return False, True, None, {}
+
+            sync_ok = await sync_grist_cache(force_full=False)
+            if not sync_ok and not grist_person_row_to_team_memberships:
+                logger.warning("Grist cache unavailable and empty for matrix lookup")
+                return False, False, None, {}
+
+            people_sync_ok = await sync_grist_people_matrix_cache(force_full=False)
+            if not people_sync_ok and not grist_matrix_id_to_person_row_id:
+                logger.warning("Grist people cache unavailable and empty")
+                return False, False, None, {}
+
+            person_row_id = grist_matrix_id_to_person_row_id.get(matrix_id)
+            if person_row_id is None:
+                logger.warning(f"Matrix ID {matrix_id} not found in Grist people cache")
+                return False, True, None, {}
+
+            memberships = grist_person_row_to_team_memberships.get(person_row_id, {})
+            person_name = grist_person_row_to_person_name.get(person_row_id)
+            return True, True, person_name, dict(memberships)
 
         handle = normalize_telegram_handle(telegram_handle)
 

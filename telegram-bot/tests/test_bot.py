@@ -2537,6 +2537,128 @@ def test_ops_sync_teams_no_memberships(monkeypatch):
     assert update.message.sent[-1]["text"] == "ℹ️ Для @alice не найдено команд в Участиях 2026."
 
 
+def test_check_user_eligibility_matrix_id_lookup(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.grist_person_row_to_person_name.clear()
+    bot.grist_person_row_to_team_memberships.clear()
+    bot.grist_matrix_id_to_person_row_id.clear()
+
+    bot.grist_person_row_to_person_name[21] = "Alice"
+    bot.grist_person_row_to_team_memberships[21] = {72: True, 73: False}
+    bot.grist_matrix_id_to_person_row_id["@alice:insomniafest.ru"] = 21
+
+    async def fake_sync_grist_cache(force_full=False):
+        return True
+
+    async def fake_sync_grist_people_matrix_cache(force_full=False):
+        return True
+
+    monkeypatch.setattr(bot, "sync_grist_cache", fake_sync_grist_cache)
+    monkeypatch.setattr(bot, "sync_grist_people_matrix_cache", fake_sync_grist_people_matrix_cache)
+
+    eligible, check_ok, person_name, memberships = asyncio.run(
+        bot.check_user_eligibility("@alice:insomniafest.ru")
+    )
+
+    assert eligible is True
+    assert check_ok is True
+    assert person_name == "Alice"
+    assert memberships == {72: True, 73: False}
+
+
+def test_prepare_team_sync_target_with_matrix_id_uses_localpart(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    async def fake_check_user_eligibility(handle):
+        return True, True, "Alice", {72: True}
+
+    captured = {}
+
+    async def fake_get_synapse_registration_status(username):
+        captured["username"] = username
+        return "registered"
+
+    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
+    monkeypatch.setattr(bot, "get_synapse_registration_status", fake_get_synapse_registration_status)
+
+    normalized_handle, person_name, memberships, error_code = asyncio.run(
+        bot.prepare_team_sync_target("@alice:insomniafest.ru")
+    )
+
+    assert normalized_handle == "alice"
+    assert person_name == "Alice"
+    assert memberships == {72: True}
+    assert error_code is None
+    assert captured["username"] == "alice"
+
+
+def test_ops_check_accepts_matrix_id(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.ADMIN_TELEGRAM_IDS.clear()
+    bot.ADMIN_TELEGRAM_IDS.add(1)
+    bot.grist_team_id_to_name.clear()
+    bot.grist_team_id_to_name[72] = "Точка сборки"
+
+    async def fake_check_user_eligibility(handle):
+        assert handle == "@alice:insomniafest.ru"
+        return True, True, "Alice", {72: True}
+
+    async def fake_get_synapse_registration_status(username):
+        assert username == "alice"
+        return "registered"
+
+    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
+    monkeypatch.setattr(bot, "get_synapse_registration_status", fake_get_synapse_registration_status)
+
+    update = DummyUpdate(user_id=1, username="admin")
+    context = DummyContext(args=["@alice:insomniafest.ru"])
+
+    asyncio.run(bot.ops_check(update, context))
+
+    text = update.message.sent[-1]["text"]
+    assert "Matrix ID: @alice:insomniafest.ru" in text
+    assert "Имя: Alice" in text
+    assert "Команда #72" in text
+
+
+def test_ops_sync_teams_accepts_matrix_id(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.ADMIN_TELEGRAM_IDS.clear()
+    bot.ADMIN_TELEGRAM_IDS.add(1)
+
+    async def fake_prepare_team_sync_target(handle):
+        assert handle == "@alice:insomniafest.ru"
+        return "alice", "Alice", {72: True}, None
+
+    async def fake_sync_user_to_team_rooms_detailed(username, memberships):
+        assert username == "alice"
+        assert memberships == {72: True}
+        return [
+            {
+                "team_id": 72,
+                "team_name": "Точка сборки",
+                "is_organizer": True,
+                "room_id": "!team72:insomniafest.ru",
+                "status": "joined",
+            }
+        ], []
+
+    monkeypatch.setattr(bot, "prepare_team_sync_target", fake_prepare_team_sync_target)
+    monkeypatch.setattr(bot, "sync_user_to_team_rooms_detailed", fake_sync_user_to_team_rooms_detailed)
+
+    update = DummyUpdate(user_id=1, username="admin")
+    context = DummyContext(args=["@alice:insomniafest.ru"])
+
+    asyncio.run(bot.ops_sync_teams(update, context))
+
+    text = update.message.sent[-1]["text"]
+    assert "Пользователь: @alice" in text
+    assert "Имя: Alice" in text
+
+
 def test_check_user_eligibility_empty_handle(monkeypatch):
     bot = load_bot_module(monkeypatch)
 

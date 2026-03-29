@@ -131,17 +131,17 @@ def normalize_telegram_handle(handle) -> str:
 
 
 def is_fake_telegram_handle(handle: str) -> bool:
-    """Treat handles with leading underscores as fake HR placeholders."""
-    return isinstance(handle, str) and handle.startswith('_')
+    """Treat handles with a leading '#' as fake HR placeholders."""
+    return isinstance(handle, str) and handle.startswith('#')
 
 
 def registration_localpart_from_handle(handle: str) -> str:
-    """Build Matrix localpart from Telegram handle, stripping fake leading underscores."""
+    """Build Matrix localpart from Telegram handle, stripping the fake leading '#'."""
     normalized = normalize_telegram_handle(handle)
     if not normalized:
         return ""
 
-    stripped = normalized.lstrip('_')
+    stripped = normalized.lstrip('#')
     return stripped or normalized
 
 
@@ -1037,8 +1037,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "(Все данные бот берет из таблицы Участия 2026 в Гристе)\n\n"
             "Как это работает:\n"
             "- /hr_check и /hr_sync_teams принимают @телеграм_ник или Matrix ID вида @username:insomniafest.ru.\n"
-            "- Если в Гристе для регистрации используется временный telegram-ник с ведущими '_' (например, __ivan), "
-            "то при /hr_register эти '_' убираются из Matrix-логина.\n"
+            "- Если в Гристе для регистрации используется временный telegram-ник с '#' в начале (например, #ivan), "
+            "то при /hr_register этот '#' убирается из Matrix-логина.\n"
             "- После успешной регистрации временный telegram-ник очищается в Гристе автоматически.\n\n"
             "/hr_sync - принудительно обновить кэш Грист и показать счетчики (полезно сделать если человек был только что добавлен в Участия 2026).\n"
             "/hr_check @телеграм_ник | @username:insomniafest.ru - проверить есть ли человек в Участиях 2026 и членство в командах.\n"

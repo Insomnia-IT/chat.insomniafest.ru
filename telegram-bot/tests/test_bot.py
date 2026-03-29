@@ -85,8 +85,8 @@ def test_normalize_telegram_handle(monkeypatch):
 def test_registration_localpart_from_handle(monkeypatch):
     bot = load_bot_module(monkeypatch)
 
-    assert bot.registration_localpart_from_handle("@__Alice") == "alice"
-    assert bot.registration_localpart_from_handle("___") == "___"
+    assert bot.registration_localpart_from_handle("@#Alice") == "alice"
+    assert bot.registration_localpart_from_handle("###") == "###"
     assert bot.registration_localpart_from_handle("normal_user") == "normal_user"
 
 
@@ -290,8 +290,8 @@ def test_clear_fake_telegram_handle_in_grist_success(monkeypatch):
 
     async def fake_fetch_grist_records_via_records_api():
         return [
-            {"id": 10, "fields": {"id": 10, "Telegram2": "@__alice"}},
-            {"id": 11, "fields": {"id": 11, "Telegram2": "__alice"}},
+            {"id": 10, "fields": {"id": 10, "Telegram2": "@#alice"}},
+            {"id": 11, "fields": {"id": 11, "Telegram2": "#alice"}},
             {"id": 12, "fields": {"id": 12, "Telegram2": "@bob"}},
         ]
 
@@ -306,7 +306,7 @@ def test_clear_fake_telegram_handle_in_grist_success(monkeypatch):
     monkeypatch.setattr(bot, "fetch_grist_records_via_records_api", fake_fetch_grist_records_via_records_api)
     monkeypatch.setattr(bot, "request_with_retries", fake_request_with_retries)
 
-    ok, code = asyncio.run(bot.clear_fake_telegram_handle_in_grist("__alice"))
+    ok, code = asyncio.run(bot.clear_fake_telegram_handle_in_grist("#alice"))
 
     assert ok is True
     assert code is None
@@ -1644,7 +1644,7 @@ def test_register_exception_path(monkeypatch):
 
 def test_register_fake_tg_uses_stripped_localpart_and_cleans_grist(monkeypatch):
     bot = load_bot_module(monkeypatch)
-    update = DummyUpdate(user_id=42, username="__Alice")
+    update = DummyUpdate(user_id=42, username="#Alice")
     context = DummyContext()
 
     bot.user_registration_times.clear()
@@ -1686,11 +1686,11 @@ def test_register_fake_tg_uses_stripped_localpart_and_cleans_grist(monkeypatch):
 
     asyncio.run(bot.register(update, context))
 
-    assert captured["eligibility_handle"] == "__alice"
+    assert captured["eligibility_handle"] == "#alice"
     assert captured["register_username"] == "alice"
-    assert captured["update_people_handle"] == "__alice"
+    assert captured["update_people_handle"] == "#alice"
     assert captured["matrix_id"] == "@alice:insomniafest.ru"
-    assert captured["cleanup_handle"] == "__alice"
+    assert captured["cleanup_handle"] == "#alice"
 
 
 def test_error_handler_sends_owner_and_user_message(monkeypatch):
@@ -2609,14 +2609,14 @@ def test_ops_register_fake_tg_uses_stripped_localpart_and_cleans_grist(monkeypat
     monkeypatch.setattr(bot, "join_user_to_team_rooms", fake_join_user_to_team_rooms)
 
     update = DummyUpdate(user_id=1, username="admin")
-    context = DummyContext(args=["@__alice"])
+    context = DummyContext(args=["@#alice"])
 
     asyncio.run(bot.ops_register(update, context))
 
-    assert captured["eligibility_handle"] == "@__alice"
+    assert captured["eligibility_handle"] == "@#alice"
     assert captured["register_username"] == "alice"
     assert captured["join_username"] == "alice"
-    assert captured["cleanup_handle"] == "__alice"
+    assert captured["cleanup_handle"] == "#alice"
 
 
 def test_ops_sync_teams_check_failed(monkeypatch):

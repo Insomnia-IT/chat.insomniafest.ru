@@ -826,9 +826,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "🔐 Команды HR\n\n"
             "(Все данные бот берет из таблицы Участия 2026 в Гристе)\n\n"
             "/hr_sync - принудительно обновить кэш Грист и показать счетчики (полезно сделать если человек был только что добавлен в Участия 2026).\n"
-            "/hr_check @handle - проверить есть ли человек в Участиях 2026 и членство в командах.\n"
-            "/hr_register @handle - выполнить полную регистрацию: аккаунт в чате и автодобавление в комнаты.\n"
-            "/hr_sync_teams @handle - перепроверить команды участника и добавить в командные комнаты (создаст комнаты при необходимости)."
+            "/hr_check @телеграм_ник - проверить есть ли человек в Участиях 2026 и членство в командах.\n"
+            "/hr_register @телеграм_ник - выполнить полную регистрацию: аккаунт в чате и автодобавление в комнаты.\n"
+            "/hr_sync_teams @телеграм_ник - перепроверить команды участника и добавить в командные комнаты (создаст комнаты при необходимости)."
         )
 
     await update.message.reply_text(message)
@@ -1025,15 +1025,15 @@ async def ops_sync(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     ok = await sync_grist_cache(force_full=True)
     if not ok:
-        await update.message.reply_text("❌ Sync failed")
+        await update.message.reply_text("❌ Не удалось обновить кэш Гриста.")
         return
 
     await update.message.reply_text(
         (
-            "✅ Sync complete\n"
-            f"users={len(grist_handle_to_record_id)}\n"
-            f"teams={len(grist_team_id_to_name)}\n"
-            f"max_record_id={grist_max_record_id}"
+            "✅ Кэш Гриста обновлен\n"
+            f"пользователей={len(grist_handle_to_record_id)}\n"
+            f"команд={len(grist_team_id_to_name)}\n"
+            f"макс_id_записи={grist_max_record_id}"
         )
     )
 
@@ -1044,18 +1044,18 @@ async def ops_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     if not context.args:
-        await update.message.reply_text("Usage: /hr_check <telegram_handle>")
+        await update.message.reply_text("Использование: /hr_check <телеграм_ник>")
         return
 
     handle = context.args[0]
     eligible, check_ok, person_name, memberships = await check_user_eligibility(handle)
 
     if not check_ok:
-        await update.message.reply_text("❌ Eligibility check failed")
+        await update.message.reply_text("❌ Не удалось проверить данные участника")
         return
 
     if not eligible:
-        await update.message.reply_text(f"❌ Not eligible: {handle}")
+        await update.message.reply_text(f"❌ Участник не найден: {handle}")
         return
 
     normalized_handle = normalize_telegram_handle(handle)
@@ -1089,18 +1089,18 @@ async def ops_register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     if not context.args:
-        await update.message.reply_text("Usage: /hr_register <telegram_handle>")
+        await update.message.reply_text("Использование: /hr_register <телеграм_ник>")
         return
 
     handle = context.args[0]
     eligible, check_ok, person_name, memberships = await check_user_eligibility(handle)
 
     if not check_ok:
-        await update.message.reply_text("❌ Eligibility check failed")
+        await update.message.reply_text("❌ Не удалось проверить данные участника")
         return
 
     if not eligible:
-        await update.message.reply_text(f"❌ Not eligible: {handle}")
+        await update.message.reply_text(f"❌ Участник не найден: {handle}")
         return
 
     username = normalize_telegram_handle(handle)
@@ -1118,14 +1118,14 @@ async def ops_register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             reactivated = True
         elif reactivation_error not in ("ACCOUNT_ACTIVE", "REACTIVATION_TOKEN_MISSING"):
             await update.message.reply_text(
-                f"❌ Reactivation failed for {username}: {reactivation_error}"
+                f"❌ Не удалось реактивировать аккаунт {username}: {reactivation_error}"
             )
             return
 
     created = register_ok and not reactivated
     if not register_ok and registration_error != "M_USER_IN_USE":
         await update.message.reply_text(
-            f"❌ Registration failed for {username}: {registration_error}"
+            f"❌ Не удалось зарегистрировать {username}: {registration_error}"
         )
         return
 
@@ -1144,28 +1144,28 @@ async def ops_register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
 
     lines = [
-        "🧪 Admin full registration",
-        f"handle={username}",
+        "🧪 Полная регистрация через HR",
+        f"пользователь={username}",
         f"mxid={to_mxid(username)}",
-        f"person_name={person_name or '-'}",
-        f"created={str(created).lower()}",
-        f"reactivated={str(reactivated).lower()}",
-        f"displayname_updated={str(displayname_ok).lower()}",
-        f"default_join_ok={str(join_ok).lower()}",
-        f"team_join_ok={str(team_join_ok).lower()}",
+        f"имя={person_name or '-'}",
+        f"создан={str(created).lower()}",
+        f"реактивирован={str(reactivated).lower()}",
+        f"отображаемое_имя_обновлено={str(displayname_ok).lower()}",
+        f"добавление_в_базовые_комнаты={str(join_ok).lower()}",
+        f"добавление_в_командные_комнаты={str(team_join_ok).lower()}",
     ]
 
     if created:
-        lines.append(f"temp_password={temp_password}")
+        lines.append(f"временный_пароль={temp_password}")
 
     if failed_rooms:
-        lines.append(f"failed_rooms={', '.join(failed_rooms)}")
+        lines.append(f"не_добавлен_в_комнаты={', '.join(failed_rooms)}")
 
     if failed_team_rooms:
-        lines.append(f"failed_team_rooms={', '.join(failed_team_rooms)}")
+        lines.append(f"не_добавлен_в_командные_комнаты={', '.join(failed_team_rooms)}")
 
     if failed_moderation_rooms:
-        lines.append(f"failed_moderation_rooms={', '.join(failed_moderation_rooms)}")
+        lines.append(f"не_выданы_права_администратора={', '.join(failed_moderation_rooms)}")
 
     await update.message.reply_text("\n".join(lines))
 
@@ -1176,30 +1176,30 @@ async def ops_sync_teams(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     if not context.args:
-        await update.message.reply_text("Usage: /hr_sync_teams <telegram_handle>")
+        await update.message.reply_text("Использование: /hr_sync_teams <телеграм_ник>")
         return
 
     handle = context.args[0]
     normalized_handle, person_name, memberships, error_code = await prepare_team_sync_target(handle)
 
     if error_code == "CHECK_FAILED":
-        await update.message.reply_text("❌ Eligibility check failed")
+        await update.message.reply_text("❌ Не удалось проверить данные участника")
         return
 
     if error_code == "NOT_ELIGIBLE":
-        await update.message.reply_text(f"❌ Not eligible: {handle}")
+        await update.message.reply_text(f"❌ Участник не найден: {handle}")
         return
 
     if error_code and error_code.startswith("NOT_REGISTERED:"):
         registration_status = error_code.split(":", 1)[1]
         await update.message.reply_text(
-            f"❌ {normalized_handle} is not registered in Matrix yet ({registration_status})."
+            f"❌ {normalized_handle} пока не зарегистрирован в Matrix ({registration_status})."
         )
         return
 
     if error_code == "NO_MEMBERSHIPS":
         await update.message.reply_text(
-            f"ℹ️ No team memberships found for @{normalized_handle}."
+            f"ℹ️ Для @{normalized_handle} не найдено команд в Участиях 2026."
         )
         return
 

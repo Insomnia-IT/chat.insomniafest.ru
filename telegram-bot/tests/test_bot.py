@@ -343,9 +343,9 @@ def test_ops_sync_admin_success(monkeypatch):
 
     assert update.message.sent
     text = update.message.sent[0]["text"]
-    assert "Sync complete" in text
-    assert "users=1" in text
-    assert "teams=1" in text
+    assert "Кэш Гриста обновлен" in text
+    assert "пользователей=1" in text
+    assert "команд=1" in text
 
 
 def test_ops_check_reports_memberships(monkeypatch):
@@ -425,13 +425,13 @@ def test_ops_register_reports_full_flow_results(monkeypatch):
 
     assert update.message.sent
     text = update.message.sent[0]["text"]
-    assert "Admin full registration" in text
+    assert "Полная регистрация через HR" in text
     assert "mxid=@test_member:insomniafest.ru" in text
-    assert "created=true" in text
-    assert "default_join_ok=true" in text
-    assert "team_join_ok=false" in text
-    assert "failed_team_rooms=GR" in text
-    assert "failed_moderation_rooms=GR" in text
+    assert "создан=true" in text
+    assert "добавление_в_базовые_комнаты=true" in text
+    assert "добавление_в_командные_комнаты=false" in text
+    assert "не_добавлен_в_командные_комнаты=GR" in text
+    assert "не_выданы_права_администратора=GR" in text
 
 
 def test_ops_sync_teams_reports_success(monkeypatch):
@@ -500,7 +500,7 @@ def test_ops_sync_teams_usage(monkeypatch):
     asyncio.run(bot.ops_sync_teams(update, context))
 
     assert update.message.sent
-    assert "Usage: /hr_sync_teams" in update.message.sent[0]["text"]
+    assert "Использование: /hr_sync_teams <телеграм_ник>" in update.message.sent[0]["text"]
 
 
 def test_sync_grist_cache_handles_real_grist_schema(monkeypatch):
@@ -1990,7 +1990,7 @@ def test_ops_sync_failure(monkeypatch):
 
     asyncio.run(bot.ops_sync(update, context))
 
-    assert update.message.sent[-1]["text"] == "❌ Sync failed"
+    assert update.message.sent[-1]["text"] == "❌ Не удалось обновить кэш Гриста."
 
 
 def test_ops_check_usage(monkeypatch):
@@ -2004,7 +2004,7 @@ def test_ops_check_usage(monkeypatch):
 
     asyncio.run(bot.ops_check(update, context))
 
-    assert update.message.sent[-1]["text"] == "Usage: /hr_check <telegram_handle>"
+    assert update.message.sent[-1]["text"] == "Использование: /hr_check <телеграм_ник>"
 
 
 def test_ops_register_usage(monkeypatch):
@@ -2018,7 +2018,7 @@ def test_ops_register_usage(monkeypatch):
 
     asyncio.run(bot.ops_register(update, context))
 
-    assert update.message.sent[-1]["text"] == "Usage: /hr_register <telegram_handle>"
+    assert update.message.sent[-1]["text"] == "Использование: /hr_register <телеграм_ник>"
 
 
 def test_ops_sync_teams_not_registered(monkeypatch):
@@ -2037,7 +2037,7 @@ def test_ops_sync_teams_not_registered(monkeypatch):
 
     asyncio.run(bot.ops_sync_teams(update, context))
 
-    assert "is not registered in Matrix yet" in update.message.sent[-1]["text"]
+    assert "пока не зарегистрирован в Matrix" in update.message.sent[-1]["text"]
 
 
 def test_set_synapse_display_name_no_token(monkeypatch):
@@ -2264,7 +2264,7 @@ def test_ops_check_handles_check_failure(monkeypatch):
 
     asyncio.run(bot.ops_check(update, context))
 
-    assert update.message.sent[-1]["text"] == "❌ Eligibility check failed"
+    assert update.message.sent[-1]["text"] == "❌ Не удалось проверить данные участника"
 
 
 def test_ops_register_reports_reactivation_failure(monkeypatch):
@@ -2291,7 +2291,7 @@ def test_ops_register_reports_reactivation_failure(monkeypatch):
 
     asyncio.run(bot.ops_register(update, context))
 
-    assert "Reactivation failed for alice: BROKEN" in update.message.sent[-1]["text"]
+    assert "Не удалось реактивировать аккаунт alice: BROKEN" in update.message.sent[-1]["text"]
 
 
 def test_ops_check_not_eligible(monkeypatch):
@@ -2310,7 +2310,7 @@ def test_ops_check_not_eligible(monkeypatch):
 
     asyncio.run(bot.ops_check(update, context))
 
-    assert update.message.sent[-1]["text"] == "❌ Not eligible: @ghost"
+    assert update.message.sent[-1]["text"] == "❌ Участник не найден: @ghost"
 
 
 def test_ops_check_reports_no_memberships(monkeypatch):
@@ -2354,7 +2354,7 @@ def test_ops_register_check_failed(monkeypatch):
 
     asyncio.run(bot.ops_register(update, context))
 
-    assert update.message.sent[-1]["text"] == "❌ Eligibility check failed"
+    assert update.message.sent[-1]["text"] == "❌ Не удалось проверить данные участника"
 
 
 def test_ops_register_not_eligible(monkeypatch):
@@ -2373,7 +2373,7 @@ def test_ops_register_not_eligible(monkeypatch):
 
     asyncio.run(bot.ops_register(update, context))
 
-    assert update.message.sent[-1]["text"] == "❌ Not eligible: @alice"
+    assert update.message.sent[-1]["text"] == "❌ Участник не найден: @alice"
 
 
 def test_ops_register_registration_failed(monkeypatch):
@@ -2396,7 +2396,7 @@ def test_ops_register_registration_failed(monkeypatch):
 
     asyncio.run(bot.ops_register(update, context))
 
-    assert update.message.sent[-1]["text"] == "❌ Registration failed for alice: REGISTER_FAILED"
+    assert update.message.sent[-1]["text"] == "❌ Не удалось зарегистрировать alice: REGISTER_FAILED"
 
 
 def test_ops_register_account_active_path_reports_existing(monkeypatch):
@@ -2436,9 +2436,9 @@ def test_ops_register_account_active_path_reports_existing(monkeypatch):
     asyncio.run(bot.ops_register(update, context))
 
     text = update.message.sent[-1]["text"]
-    assert "created=false" in text
-    assert "reactivated=false" in text
-    assert "temp_password=" not in text
+    assert "создан=false" in text
+    assert "реактивирован=false" in text
+    assert "временный_пароль=" not in text
 
 
 def test_ops_register_reactivation_token_missing_path_reports_existing(monkeypatch):
@@ -2474,10 +2474,10 @@ def test_ops_register_reactivation_token_missing_path_reports_existing(monkeypat
     asyncio.run(bot.ops_register(update, context))
 
     text = update.message.sent[-1]["text"]
-    assert "person_name=-" in text
-    assert "created=false" in text
-    assert "reactivated=false" in text
-    assert "temp_password=" not in text
+    assert "имя=-" in text
+    assert "создан=false" in text
+    assert "реактивирован=false" in text
+    assert "временный_пароль=" not in text
 
 
 def test_ops_sync_teams_check_failed(monkeypatch):
@@ -2496,7 +2496,7 @@ def test_ops_sync_teams_check_failed(monkeypatch):
 
     asyncio.run(bot.ops_sync_teams(update, context))
 
-    assert update.message.sent[-1]["text"] == "❌ Eligibility check failed"
+    assert update.message.sent[-1]["text"] == "❌ Не удалось проверить данные участника"
 
 
 def test_ops_sync_teams_not_eligible(monkeypatch):
@@ -2515,7 +2515,7 @@ def test_ops_sync_teams_not_eligible(monkeypatch):
 
     asyncio.run(bot.ops_sync_teams(update, context))
 
-    assert update.message.sent[-1]["text"] == "❌ Not eligible: @ghost"
+    assert update.message.sent[-1]["text"] == "❌ Участник не найден: @ghost"
 
 
 def test_ops_sync_teams_no_memberships(monkeypatch):
@@ -2534,7 +2534,7 @@ def test_ops_sync_teams_no_memberships(monkeypatch):
 
     asyncio.run(bot.ops_sync_teams(update, context))
 
-    assert update.message.sent[-1]["text"] == "ℹ️ No team memberships found for @alice."
+    assert update.message.sent[-1]["text"] == "ℹ️ Для @alice не найдено команд в Участиях 2026."
 
 
 def test_check_user_eligibility_empty_handle(monkeypatch):

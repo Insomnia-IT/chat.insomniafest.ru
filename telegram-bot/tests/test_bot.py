@@ -82,6 +82,14 @@ def test_normalize_telegram_handle(monkeypatch):
     assert bot.normalize_telegram_handle(["", " @ArrayHandle "]) == "arrayhandle"
 
 
+def test_registration_localpart_from_handle(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    assert bot.registration_localpart_from_handle("@__Alice") == "alice"
+    assert bot.registration_localpart_from_handle("___") == "___"
+    assert bot.registration_localpart_from_handle("normal_user") == "normal_user"
+
+
 def test_parse_grist_ref_id(monkeypatch):
     bot = load_bot_module(monkeypatch)
 
@@ -275,6 +283,39 @@ def test_update_grist_people_matrix_id_missing_person_row(monkeypatch):
     ok, code = asyncio.run(bot.update_grist_people_matrix_id("alice", "@alice:insomniafest.ru"))
     assert ok is False
     assert code == "PERSON_ROW_ID_MISSING"
+
+
+def test_clear_fake_telegram_handle_in_grist_success(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    async def fake_fetch_grist_records_via_records_api():
+        return [
+            {"id": 10, "fields": {"id": 10, "Telegram2": "@__alice"}},
+            {"id": 11, "fields": {"id": 11, "Telegram2": "__alice"}},
+            {"id": 12, "fields": {"id": 12, "Telegram2": "@bob"}},
+        ]
+
+    captured = {}
+
+    async def fake_request_with_retries(client, method, url, **kwargs):
+        captured["method"] = method
+        captured["url"] = url
+        captured["json"] = kwargs.get("json")
+        return FakeResponse(200, {})
+
+    monkeypatch.setattr(bot, "fetch_grist_records_via_records_api", fake_fetch_grist_records_via_records_api)
+    monkeypatch.setattr(bot, "request_with_retries", fake_request_with_retries)
+
+    ok, code = asyncio.run(bot.clear_fake_telegram_handle_in_grist("__alice"))
+
+    assert ok is True
+    assert code is None
+    assert captured["method"] == "PATCH"
+    assert "/tables/Participations/records" in captured["url"]
+    assert captured["json"]["records"] == [
+        {"id": 10, "fields": {"Telegram2": ""}},
+        {"id": 11, "fields": {"Telegram2": ""}},
+    ]
 
 
 def test_require_admin_denies_non_admin(monkeypatch):
@@ -1601,6 +1642,57 @@ def test_register_exception_path(monkeypatch):
     assert len(notified) == 1
 
 
+def test_register_fake_tg_uses_stripped_localpart_and_cleans_grist(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    update = DummyUpdate(user_id=42, username="__Alice")
+    context = DummyContext()
+
+    bot.user_registration_times.clear()
+    captured = {}
+
+    async def fake_check_user_eligibility(handle):
+        captured["eligibility_handle"] = handle
+        return True, True, "Alice", {72: False}
+
+    async def fake_register_synapse_user(username, password):
+        captured["register_username"] = username
+        return True, None
+
+    async def fake_set_synapse_display_name(username, display_name):
+        return True
+
+    async def fake_update_grist_people_matrix_id(handle, matrix_id):
+        captured["update_people_handle"] = handle
+        captured["matrix_id"] = matrix_id
+        return True, None
+
+    async def fake_clear_fake_telegram_handle_in_grist(handle):
+        captured["cleanup_handle"] = handle
+        return True, None
+
+    async def fake_join_user_to_rooms(username, room_aliases):
+        return True, []
+
+    async def fake_join_user_to_team_rooms(username, memberships):
+        return True, [], []
+
+    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
+    monkeypatch.setattr(bot, "register_synapse_user", fake_register_synapse_user)
+    monkeypatch.setattr(bot, "set_synapse_display_name", fake_set_synapse_display_name)
+    monkeypatch.setattr(bot, "update_grist_people_matrix_id", fake_update_grist_people_matrix_id)
+    monkeypatch.setattr(bot, "clear_fake_telegram_handle_in_grist", fake_clear_fake_telegram_handle_in_grist)
+    monkeypatch.setattr(bot, "join_user_to_rooms", fake_join_user_to_rooms)
+    monkeypatch.setattr(bot, "join_user_to_team_rooms", fake_join_user_to_team_rooms)
+
+    asyncio.run(bot.register(update, context))
+
+    assert captured["eligibility_handle"] == "__alice"
+    assert captured["register_username"] == "alice"
+    assert captured["update_people_handle"] == "__alice"
+    assert captured["matrix_id"] == "@alice:insomniafest.ru"
+    assert captured["cleanup_handle"] == "__alice"
+
+
 def test_error_handler_sends_owner_and_user_message(monkeypatch):
     bot = load_bot_module(monkeypatch)
     monkeypatch.setattr(bot, "Update", DummyUpdate)
@@ -2478,6 +2570,53 @@ def test_ops_register_reactivation_token_missing_path_reports_existing(monkeypat
     assert "создан=false" in text
     assert "реактивирован=false" in text
     assert "временный_пароль=" not in text
+
+
+def test_ops_register_fake_tg_uses_stripped_localpart_and_cleans_grist(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.ADMIN_TELEGRAM_IDS.clear()
+    bot.ADMIN_TELEGRAM_IDS.add(1)
+    captured = {}
+
+    async def fake_check_user_eligibility(handle):
+        captured["eligibility_handle"] = handle
+        return True, True, "Alice", {72: False}
+
+    async def fake_register_synapse_user(username, password):
+        captured["register_username"] = username
+        return True, None
+
+    async def fake_set_synapse_display_name(username, display_name):
+        return True
+
+    async def fake_clear_fake_telegram_handle_in_grist(handle):
+        captured["cleanup_handle"] = handle
+        return True, None
+
+    async def fake_join_user_to_rooms(username, rooms):
+        captured["join_username"] = username
+        return True, []
+
+    async def fake_join_user_to_team_rooms(username, memberships):
+        return True, [], []
+
+    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
+    monkeypatch.setattr(bot, "register_synapse_user", fake_register_synapse_user)
+    monkeypatch.setattr(bot, "set_synapse_display_name", fake_set_synapse_display_name)
+    monkeypatch.setattr(bot, "clear_fake_telegram_handle_in_grist", fake_clear_fake_telegram_handle_in_grist)
+    monkeypatch.setattr(bot, "join_user_to_rooms", fake_join_user_to_rooms)
+    monkeypatch.setattr(bot, "join_user_to_team_rooms", fake_join_user_to_team_rooms)
+
+    update = DummyUpdate(user_id=1, username="admin")
+    context = DummyContext(args=["@__alice"])
+
+    asyncio.run(bot.ops_register(update, context))
+
+    assert captured["eligibility_handle"] == "@__alice"
+    assert captured["register_username"] == "alice"
+    assert captured["join_username"] == "alice"
+    assert captured["cleanup_handle"] == "__alice"
 
 
 def test_ops_sync_teams_check_failed(monkeypatch):

@@ -130,6 +130,21 @@ def normalize_telegram_handle(handle) -> str:
     return handle.strip().lstrip('@').lower()
 
 
+def is_fake_telegram_handle(handle: str) -> bool:
+    """Treat handles with leading underscores as fake HR placeholders."""
+    return isinstance(handle, str) and handle.startswith('_')
+
+
+def registration_localpart_from_handle(handle: str) -> str:
+    """Build Matrix localpart from Telegram handle, stripping fake leading underscores."""
+    normalized = normalize_telegram_handle(handle)
+    if not normalized:
+        return ""
+
+    stripped = normalized.lstrip('_')
+    return stripped or normalized
+
+
 def is_matrix_id(value) -> bool:
     """Return True when value looks like a full Matrix ID (@localpart:server)."""
     if not isinstance(value, str):
@@ -481,6 +496,77 @@ async def update_grist_people_matrix_id(handle: str, matrix_id: str) -> tuple[bo
     return True, None
 
 
+async def clear_fake_telegram_handle_in_grist(handle: str) -> tuple[bool, str | None]:
+    """Remove fake Telegram handle from Participations rows after successful registration."""
+    normalized = normalize_telegram_handle(handle)
+    if not normalized:
+        return False, "HANDLE_EMPTY"
+
+    try:
+        records = await fetch_grist_records_via_records_api()
+    except Exception as e:
+        logger.warning(f"Failed to fetch records for fake handle cleanup ({normalized}): {e}")
+        return False, "CLEANUP_FETCH_FAILED"
+
+    row_ids = []
+    for record in records:
+        fields = record.get("fields", {})
+        telegram2 = normalize_telegram_handle(fields.get("Telegram2"))
+        if telegram2 != normalized:
+            continue
+
+        record_id = fields.get("id")
+        if record_id is None:
+            record_id = record.get("id")
+        record_id = parse_grist_ref_id(record_id)
+        if record_id is not None:
+            row_ids.append(record_id)
+
+    if not row_ids:
+        return True, None
+
+    url = f"https://grist.insomniafest.ru/api/docs/{GRIST_DOC_ID}/tables/{GRIST_TABLE_ID}/records"
+    headers = {
+        "Authorization": f"Bearer {GRIST_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "records": [
+            {
+                "id": row_id,
+                "fields": {
+                    "Telegram2": "",
+                },
+            }
+            for row_id in row_ids
+        ]
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+            response = await request_with_retries(
+                client,
+                "PATCH",
+                url,
+                headers=headers,
+                json=payload,
+            )
+    except Exception as e:
+        logger.warning(f"Failed to cleanup fake Telegram handle {normalized}: {e}")
+        return False, "CLEANUP_EXCEPTION"
+
+    if response.status_code not in (200, 201):
+        logger.warning(
+            "Failed to cleanup fake Telegram handle %s: %s %s",
+            normalized,
+            response.status_code,
+            response.text,
+        )
+        return False, "CLEANUP_FAILED"
+
+    return True, None
+
+
 async def check_synapse_admin_token() -> tuple[bool, str | None]:
     """Verify the Synapse admin token by calling a lightweight admin endpoint.
 
@@ -595,7 +681,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle registration request."""
     user_id = update.effective_user.id
-    username = normalize_telegram_handle(update.effective_user.username) or str(user_id)
+    original_handle = normalize_telegram_handle(update.effective_user.username) or str(user_id)
+    username = registration_localpart_from_handle(original_handle) or str(user_id)
+    fake_tg_handle = is_fake_telegram_handle(original_handle)
     
     # Rate limiting check
     now = time.time()
@@ -617,7 +705,7 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("Проверяю вашу благонадежность...")
         
         # Check if user is in the Grist list
-        is_eligible, eligibility_check_ok, person_name, team_memberships = await check_user_eligibility(username)
+        is_eligible, eligibility_check_ok, person_name, team_memberships = await check_user_eligibility(original_handle)
 
         if not eligibility_check_ok:
             await update.message.reply_text(
@@ -666,7 +754,7 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                     logger.warning(f"Could not set display name for {username} to '{person_name}'")
 
             mxid = to_mxid(username)
-            people_update_ok, people_update_error = await update_grist_people_matrix_id(username, mxid)
+            people_update_ok, people_update_error = await update_grist_people_matrix_id(original_handle, mxid)
             if not people_update_ok and people_update_error != "PERSON_ROW_ID_MISSING":
                 await notify_owner(
                     context,
@@ -677,6 +765,19 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                         f"people_update_error={people_update_error}"
                     ),
                 )
+
+            if fake_tg_handle:
+                cleanup_ok, cleanup_error = await clear_fake_telegram_handle_in_grist(original_handle)
+                if not cleanup_ok:
+                    await notify_owner(
+                        context,
+                        (
+                            "⚠️ Не удалось очистить фейковый Telegram handle в Гристе\n"
+                            f"username={username}\n"
+                            f"fake_handle={original_handle}\n"
+                            f"cleanup_error={cleanup_error}"
+                        ),
+                    )
 
             room_aliases = list(AUTO_JOIN_ROOMS)
             if is_organizer:
@@ -1221,7 +1322,9 @@ async def ops_register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_text(f"❌ Участник не найден: {handle}")
         return
 
-    username = normalize_telegram_handle(handle)
+    original_handle = normalize_telegram_handle(handle)
+    username = registration_localpart_from_handle(original_handle)
+    fake_tg_handle = is_fake_telegram_handle(original_handle)
     temp_password = secrets.token_urlsafe(12)
     is_organizer = any(memberships.values())
 
@@ -1250,6 +1353,15 @@ async def ops_register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     displayname_ok = True
     if person_name:
         displayname_ok = await set_synapse_display_name(username, person_name)
+
+    if fake_tg_handle:
+        cleanup_ok, cleanup_error = await clear_fake_telegram_handle_in_grist(original_handle)
+        if not cleanup_ok:
+            lines = [
+                "⚠️ Регистрация завершена, но не удалось очистить фейковый Telegram в Гристе.",
+                f"ошибка={cleanup_error}",
+            ]
+            await update.message.reply_text("\n".join(lines))
 
     room_aliases = list(AUTO_JOIN_ROOMS)
     if is_organizer:

@@ -1257,6 +1257,23 @@ async def ops_sync(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+async def _hr_require_eligible(
+    update: Update, handle: str
+) -> tuple[str | None, dict[int, bool]] | None:
+    """Check eligibility and send standard HR error replies on failure.
+
+    Returns (person_name, memberships) on success, or None if an error reply was sent.
+    """
+    eligible, check_ok, person_name, memberships = await check_user_eligibility(handle)
+    if not check_ok:
+        await update.message.reply_text("❌ Не удалось проверить данные участника")
+        return None
+    if not eligible:
+        await update.message.reply_text(f"❌ Участник не найден: {handle}")
+        return None
+    return person_name, memberships
+
+
 async def ops_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Check eligibility and team memberships for a Telegram handle. Hidden admin-only command."""
     if not await require_hr(update):
@@ -1267,15 +1284,10 @@ async def ops_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     handle = context.args[0]
-    eligible, check_ok, person_name, memberships = await check_user_eligibility(handle)
-
-    if not check_ok:
-        await update.message.reply_text("❌ Не удалось проверить данные участника")
+    result = await _hr_require_eligible(update, handle)
+    if result is None:
         return
-
-    if not eligible:
-        await update.message.reply_text(f"❌ Участник не найден: {handle}")
-        return
+    person_name, memberships = result
 
     is_matrix_lookup = is_matrix_id(handle)
     normalized_handle = matrix_localpart_from_id(handle) if is_matrix_lookup else normalize_telegram_handle(handle)
@@ -1317,15 +1329,10 @@ async def ops_register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     handle = context.args[0]
-    eligible, check_ok, person_name, memberships = await check_user_eligibility(handle)
-
-    if not check_ok:
-        await update.message.reply_text("❌ Не удалось проверить данные участника")
+    result = await _hr_require_eligible(update, handle)
+    if result is None:
         return
-
-    if not eligible:
-        await update.message.reply_text(f"❌ Участник не найден: {handle}")
-        return
+    person_name, memberships = result
 
     original_handle = normalize_telegram_handle(handle)
     username = registration_localpart_from_handle(original_handle)
@@ -1415,24 +1422,24 @@ async def ops_sync_teams(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     handle = context.args[0]
-    normalized_handle, person_name, memberships, error_code = await prepare_team_sync_target(handle)
-
-    if error_code == "CHECK_FAILED":
-        await update.message.reply_text("❌ Не удалось проверить данные участника")
+    result = await _hr_require_eligible(update, handle)
+    if result is None:
         return
+    person_name, memberships = result
 
-    if error_code == "NOT_ELIGIBLE":
-        await update.message.reply_text(f"❌ Участник не найден: {handle}")
-        return
-
-    if error_code and error_code.startswith("NOT_REGISTERED:"):
-        registration_status = error_code.split(":", 1)[1]
+    normalized_handle = (
+        matrix_localpart_from_id(handle)
+        if is_matrix_id(handle)
+        else normalize_telegram_handle(handle)
+    )
+    registration_status = await get_synapse_registration_status(normalized_handle)
+    if registration_status != "registered":
         await update.message.reply_text(
             f"❌ {normalized_handle} пока не зарегистрирован в Matrix ({registration_status})."
         )
         return
 
-    if error_code == "NO_MEMBERSHIPS":
+    if not memberships:
         await update.message.reply_text(
             f"ℹ️ Для @{normalized_handle} не найдено команд в Участиях 2026."
         )

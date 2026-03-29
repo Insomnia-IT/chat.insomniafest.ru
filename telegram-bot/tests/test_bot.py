@@ -2119,10 +2119,14 @@ def test_ops_sync_teams_not_registered(monkeypatch):
     bot.ADMIN_TELEGRAM_IDS.clear()
     bot.ADMIN_TELEGRAM_IDS.add(1)
 
-    async def fake_prepare_team_sync_target(handle):
-        return "alice", "Alice", {1: True}, "NOT_REGISTERED:unknown"
+    async def fake_check_user_eligibility(handle):
+        return True, True, "Alice", {1: True}
 
-    monkeypatch.setattr(bot, "prepare_team_sync_target", fake_prepare_team_sync_target)
+    async def fake_get_synapse_registration_status(username):
+        return "unknown"
+
+    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
+    monkeypatch.setattr(bot, "get_synapse_registration_status", fake_get_synapse_registration_status)
 
     update = DummyUpdate(user_id=1, username="admin")
     context = DummyContext(args=["@alice"])
@@ -2625,10 +2629,10 @@ def test_ops_sync_teams_check_failed(monkeypatch):
     bot.ADMIN_TELEGRAM_IDS.clear()
     bot.ADMIN_TELEGRAM_IDS.add(1)
 
-    async def fake_prepare_team_sync_target(handle):
-        return "", None, {}, "CHECK_FAILED"
+    async def fake_check_user_eligibility(handle):
+        return False, False, None, {}
 
-    monkeypatch.setattr(bot, "prepare_team_sync_target", fake_prepare_team_sync_target)
+    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
 
     update = DummyUpdate(user_id=1, username="admin")
     context = DummyContext(args=["@alice"])
@@ -2644,10 +2648,10 @@ def test_ops_sync_teams_not_eligible(monkeypatch):
     bot.ADMIN_TELEGRAM_IDS.clear()
     bot.ADMIN_TELEGRAM_IDS.add(1)
 
-    async def fake_prepare_team_sync_target(handle):
-        return "", None, {}, "NOT_ELIGIBLE"
+    async def fake_check_user_eligibility(handle):
+        return False, True, None, {}
 
-    monkeypatch.setattr(bot, "prepare_team_sync_target", fake_prepare_team_sync_target)
+    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
 
     update = DummyUpdate(user_id=1, username="admin")
     context = DummyContext(args=["@ghost"])
@@ -2663,10 +2667,14 @@ def test_ops_sync_teams_no_memberships(monkeypatch):
     bot.ADMIN_TELEGRAM_IDS.clear()
     bot.ADMIN_TELEGRAM_IDS.add(1)
 
-    async def fake_prepare_team_sync_target(handle):
-        return "alice", "Alice", {}, "NO_MEMBERSHIPS"
+    async def fake_check_user_eligibility(handle):
+        return True, True, "Alice", {}
 
-    monkeypatch.setattr(bot, "prepare_team_sync_target", fake_prepare_team_sync_target)
+    async def fake_get_synapse_registration_status(username):
+        return "registered"
+
+    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
+    monkeypatch.setattr(bot, "get_synapse_registration_status", fake_get_synapse_registration_status)
 
     update = DummyUpdate(user_id=1, username="admin")
     context = DummyContext(args=["@alice"])
@@ -2768,9 +2776,13 @@ def test_ops_sync_teams_accepts_matrix_id(monkeypatch):
     bot.ADMIN_TELEGRAM_IDS.clear()
     bot.ADMIN_TELEGRAM_IDS.add(1)
 
-    async def fake_prepare_team_sync_target(handle):
+    async def fake_check_user_eligibility(handle):
         assert handle == "@alice:insomniafest.ru"
-        return "alice", "Alice", {72: True}, None
+        return True, True, "Alice", {72: True}
+
+    async def fake_get_synapse_registration_status(username):
+        assert username == "alice"
+        return "registered"
 
     async def fake_sync_user_to_team_rooms_detailed(username, memberships):
         assert username == "alice"
@@ -2785,7 +2797,8 @@ def test_ops_sync_teams_accepts_matrix_id(monkeypatch):
             }
         ], []
 
-    monkeypatch.setattr(bot, "prepare_team_sync_target", fake_prepare_team_sync_target)
+    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
+    monkeypatch.setattr(bot, "get_synapse_registration_status", fake_get_synapse_registration_status)
     monkeypatch.setattr(bot, "sync_user_to_team_rooms_detailed", fake_sync_user_to_team_rooms_detailed)
 
     update = DummyUpdate(user_id=1, username="admin")

@@ -39,9 +39,11 @@ class DummyChat:
 
 
 class DummyUpdate:
-    def __init__(self, user_id=1, username="alice", chat_id=1):
+    def __init__(self, user_id=1, username="alice", chat_id=1, is_edited=False):
         self.effective_user = DummyUser(user_id=user_id, username=username)
-        self.message = DummyMessage()
+        self.message = None if is_edited else DummyMessage()
+        self.edited_message = DummyMessage() if is_edited else None
+        self.effective_message = self.edited_message if is_edited else self.message
         self.effective_chat = DummyChat(chat_id=chat_id)
 
 
@@ -2679,6 +2681,25 @@ def test_ops_sync_teams_not_eligible(monkeypatch):
     asyncio.run(bot.ops_sync_teams(update, context))
 
     assert update.message.sent[-1]["text"] == "❌ Участник не найден: @ghost"
+
+
+def test_ops_sync_teams_not_eligible_with_edited_message(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.ADMIN_TELEGRAM_IDS.clear()
+    bot.ADMIN_TELEGRAM_IDS.add(1)
+
+    async def fake_check_user_eligibility(handle):
+        return False, True, None, {}
+
+    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
+
+    update = DummyUpdate(user_id=1, username="admin", is_edited=True)
+    context = DummyContext(args=["@ghost"])
+
+    asyncio.run(bot.ops_sync_teams(update, context))
+
+    assert update.edited_message.sent[-1]["text"] == "❌ Участник не найден: @ghost"
 
 
 def test_ops_sync_teams_no_memberships(monkeypatch):

@@ -419,6 +419,7 @@ def test_ops_check_reports_memberships(monkeypatch):
     assert "Telegram: @test_member" in text
     assert "Имя: Test Person" in text
     assert "Регистрация в Matrix: уже зарегистрирован" in text
+    assert "Комната организаторов: да" in text
     assert "Команда #2" in text
     assert "роль: организатор" in text
 
@@ -477,6 +478,7 @@ def test_ops_register_reports_full_flow_results(monkeypatch):
 
 def test_ops_sync_teams_reports_success(monkeypatch):
     bot = load_bot_module(monkeypatch)
+    captured = {}
 
     bot.ADMIN_TELEGRAM_IDS.clear()
     bot.ADMIN_TELEGRAM_IDS.add(1)
@@ -509,9 +511,15 @@ def test_ops_sync_teams_reports_success(monkeypatch):
             },
         ], []
 
+    async def fake_join_user_to_rooms(username, rooms):
+        captured["orgs_join_username"] = username
+        captured["orgs_join_rooms"] = list(rooms)
+        return True, []
+
     monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
     monkeypatch.setattr(bot, "get_synapse_registration_status", fake_get_synapse_registration_status)
     monkeypatch.setattr(bot, "sync_user_to_team_rooms_detailed", fake_sync_user_to_team_rooms_detailed)
+    monkeypatch.setattr(bot, "join_user_to_rooms", fake_join_user_to_rooms)
 
     update = DummyUpdate(user_id=1, username="admin")
     context = DummyContext(args=["@test_member"])
@@ -527,6 +535,8 @@ def test_ops_sync_teams_reports_success(monkeypatch):
     assert "Был добавлен в эти комнаты" in text
     assert "2026.GR(Организатор)" in text
     assert update.message.sent[0]["parse_mode"] == bot.ParseMode.HTML
+    assert captured["orgs_join_username"] == "test_member"
+    assert captured["orgs_join_rooms"] == [bot.ORGS_ROOM]
 
 
 def test_ops_sync_teams_usage(monkeypatch):
@@ -1077,6 +1087,7 @@ def test_start_command(monkeypatch):
 
 def test_my_teams_success(monkeypatch):
     bot = load_bot_module(monkeypatch)
+    captured = {}
 
     async def fake_check_user_eligibility(handle):
         assert handle == "alice"
@@ -1106,9 +1117,15 @@ def test_my_teams_success(monkeypatch):
             },
         ], []
 
+    async def fake_join_user_to_rooms(username, rooms):
+        captured["orgs_join_username"] = username
+        captured["orgs_join_rooms"] = list(rooms)
+        return True, []
+
     monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
     monkeypatch.setattr(bot, "get_synapse_registration_status", fake_get_synapse_registration_status)
     monkeypatch.setattr(bot, "sync_user_to_team_rooms_detailed", fake_sync_user_to_team_rooms_detailed)
+    monkeypatch.setattr(bot, "join_user_to_rooms", fake_join_user_to_rooms)
 
     update = DummyUpdate(user_id=10, username="alice")
     context = DummyContext()
@@ -1122,6 +1139,8 @@ def test_my_teams_success(monkeypatch):
     assert "Вы уже были в этих командных комнатах" in update.message.sent[1]["text"]
     assert "Вы были добавлены в эти комнаты" in update.message.sent[1]["text"]
     assert update.message.sent[1]["parse_mode"] == bot.ParseMode.HTML
+    assert captured["orgs_join_username"] == "alice"
+    assert captured["orgs_join_rooms"] == [bot.ORGS_ROOM]
 
 
 def test_my_teams_requires_registration(monkeypatch):
@@ -2431,6 +2450,7 @@ def test_ops_check_reports_no_memberships(monkeypatch):
 
     text = update.message.sent[-1]["text"]
     assert "Регистрация в Matrix: не удалось определить" in text
+    assert "Комната организаторов: нет" in text
     assert "Команды: не указаны" in text
 
 
@@ -2767,11 +2787,13 @@ def test_ops_check_accepts_matrix_id(monkeypatch):
     text = update.message.sent[-1]["text"]
     assert "Matrix ID: @alice:insomniafest.ru" in text
     assert "Имя: Alice" in text
+    assert "Комната организаторов: да" in text
     assert "Команда #72" in text
 
 
 def test_ops_sync_teams_accepts_matrix_id(monkeypatch):
     bot = load_bot_module(monkeypatch)
+    captured = {}
 
     bot.ADMIN_TELEGRAM_IDS.clear()
     bot.ADMIN_TELEGRAM_IDS.add(1)
@@ -2797,9 +2819,15 @@ def test_ops_sync_teams_accepts_matrix_id(monkeypatch):
             }
         ], []
 
+    async def fake_join_user_to_rooms(username, rooms):
+        captured["orgs_join_username"] = username
+        captured["orgs_join_rooms"] = list(rooms)
+        return True, []
+
     monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
     monkeypatch.setattr(bot, "get_synapse_registration_status", fake_get_synapse_registration_status)
     monkeypatch.setattr(bot, "sync_user_to_team_rooms_detailed", fake_sync_user_to_team_rooms_detailed)
+    monkeypatch.setattr(bot, "join_user_to_rooms", fake_join_user_to_rooms)
 
     update = DummyUpdate(user_id=1, username="admin")
     context = DummyContext(args=["@alice:insomniafest.ru"])
@@ -2809,6 +2837,8 @@ def test_ops_sync_teams_accepts_matrix_id(monkeypatch):
     text = update.message.sent[-1]["text"]
     assert "Пользователь: @alice" in text
     assert "Имя: Alice" in text
+    assert captured["orgs_join_username"] == "alice"
+    assert captured["orgs_join_rooms"] == [bot.ORGS_ROOM]
 
 
 def test_check_user_eligibility_empty_handle(monkeypatch):

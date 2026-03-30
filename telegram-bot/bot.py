@@ -1174,6 +1174,10 @@ async def my_teams(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
+    failed_orgs_rooms = []
+    if any(memberships.values()):
+        _, failed_orgs_rooms = await join_user_to_rooms(normalized_handle, [ORGS_ROOM])
+
     team_results, failed_moderation_rooms = await sync_user_to_team_rooms_detailed(
         normalized_handle,
         memberships,
@@ -1185,6 +1189,8 @@ async def my_teams(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         already_title="Вы уже были в этих командных комнатах:",
         newly_title="Вы были добавлены в эти комнаты:",
     )
+    if failed_orgs_rooms:
+        message += "\n\n⚠️ Не удалось добавить в комнату организаторов."
 
     await update.message.reply_text(message, parse_mode=ParseMode.HTML)
 
@@ -1297,6 +1303,7 @@ async def ops_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "not_registered": "не зарегистрирован",
         "unknown": "не удалось определить",
     }.get(registration_status, "не удалось определить")
+    organizer_room_status = "да" if any(memberships.values()) else "нет"
 
     lines = [
         "✅ Участник найден в списке Участий 2026",
@@ -1307,6 +1314,7 @@ async def ops_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         ),
         f"Имя: {person_name or '-'}",
         f"Регистрация в Matrix: {registration_status_ru}",
+        f"Комната организаторов: {organizer_room_status}",
     ]
     if memberships:
         for team_id, is_org in sorted(memberships.items()):
@@ -1445,6 +1453,10 @@ async def ops_sync_teams(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return
 
+    failed_orgs_rooms = []
+    if any(memberships.values()):
+        _, failed_orgs_rooms = await join_user_to_rooms(normalized_handle, [ORGS_ROOM])
+
     team_results, failed_moderation_rooms = await sync_user_to_team_rooms_detailed(
         normalized_handle,
         memberships,
@@ -1463,6 +1475,8 @@ async def ops_sync_teams(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             f"Имя: {safe_name}",
         ],
     )
+    if failed_orgs_rooms:
+        message += "\n\n⚠️ Не удалось добавить в комнату организаторов."
 
     await update.message.reply_text(message, parse_mode=ParseMode.HTML)
 

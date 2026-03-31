@@ -1395,6 +1395,11 @@ async def ops_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     is_matrix_lookup = is_matrix_id(handle)
     normalized_handle = matrix_localpart_from_id(handle) if is_matrix_lookup else normalize_telegram_handle(handle)
     registration_status = await get_synapse_registration_status(normalized_handle)
+    matrix_username = (
+        normalize_matrix_id(handle)
+        if is_matrix_lookup
+        else to_mxid(registration_localpart_from_handle(normalized_handle) or normalized_handle)
+    )
     registration_status_ru = {
         "registered": "уже зарегистрирован",
         "not_registered": "не зарегистрирован",
@@ -1407,29 +1412,30 @@ async def ops_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     blacklist_status = describe_blacklist_status(people_found, is_not_blacklisted)
 
     lines = [
-        "✅ Отчет по участнику",
+        "🧾 Отчет по участнику",
         (
-            f"Matrix ID: {normalize_matrix_id(handle)}"
+            f"🆔 Matrix ID: {normalize_matrix_id(handle)}"
             if is_matrix_lookup
-            else f"Telegram: @{normalized_handle}"
+            else f"👤 Telegram: @{normalized_handle}"
         ),
-        f"Имя: {person_name or '-'}",
-        f"person_row_id: {person_row_id if person_row_id is not None else '-'}",
-        f"People: {people_status}",
-        f"Черный список: {blacklist_status}",
-        f"Участия 2026: {participation_status}",
-        f"Регистрация в Matrix: {registration_status_ru}",
-        f"Комната организаторов: {organizer_room_status}",
+        f"🙋 Имя: {person_name or '-'}",
+        f"📋 Найдет в Человеках: {people_status}",
+        f"🔢 ID в Человеках: {person_row_id if person_row_id is not None else '-'}",
+        f"🚫 Черный список: {blacklist_status}",
+        f"🎟️ Участия 2026: {participation_status}",
+        f"💬 Регистрация в Matrix: {registration_status_ru} ({matrix_username})",
+        f"🛡️ Комната организаторов: {organizer_room_status}",
     ]
     if memberships:
+        lines.append("👥 Команды:")
         for team_id, is_org in sorted(memberships.items()):
             lines.append(
-                f"Команда #{team_id}: {get_team_name(team_id)}; роль: {'организатор' if is_org else 'участник'}"
+                f"• #{team_id} {get_team_name(team_id)} — {'организатор' if is_org else 'участник'}"
             )
     elif not participation_check_ok:
-        lines.append("Команды: не удалось определить")
+        lines.append("👥 Команды: не удалось определить")
     else:
-        lines.append("Команды: не указаны")
+        lines.append("👥 Команды: не указаны")
 
     await update.effective_message.reply_text("\n".join(lines))
 

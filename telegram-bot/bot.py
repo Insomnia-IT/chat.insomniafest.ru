@@ -1414,23 +1414,23 @@ async def ops_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     lines = [
         "🧾 Отчет по участнику",
         (
-            f"🆔 Matrix ID: {normalize_matrix_id(handle)}"
+            f"🆔 Matrix ID: {normalize_matrix_id(handle)}\n\n"
             if is_matrix_lookup
-            else f"👤 Telegram: @{normalized_handle}"
+            else f"👤 Telegram: @{normalized_handle}\n\n"
         ),
-        f"🙋 Имя: {person_name or '-'}",
-        f"📋 Найдет в Человеках: {people_status}",
-        f"🔢 ID в Человеках: {person_row_id if person_row_id is not None else '-'}",
-        f"🚫 Черный список: {blacklist_status}",
-        f"🎟️ Участия 2026: {participation_status}",
-        f"💬 Регистрация в Matrix: {registration_status_ru} ({matrix_username})",
-        f"🛡️ Комната организаторов: {organizer_room_status}",
+        f"Имя: {person_name or '-'}",
+        f"Найден в Человеках: {people_status}",
+        f"ID в Человеках: {person_row_id if person_row_id is not None else '-'}",
+        f"Черный список: {blacklist_status}",
+        f"Участия 2026: {participation_status}",
+        f"Регистрация в Matrix: {registration_status_ru} ({matrix_username})",
+        f"Комната организаторов: {organizer_room_status}\n\n",
     ]
     if memberships:
         lines.append("👥 Команды:")
         for team_id, is_org in sorted(memberships.items()):
             lines.append(
-                f"• #{team_id} {get_team_name(team_id)} — {'организатор' if is_org else 'участник'}"
+                f"• {get_team_name(team_id)} — {'организатор' if is_org else 'участник'}"
             )
     elif not participation_check_ok:
         lines.append("👥 Команды: не удалось определить")

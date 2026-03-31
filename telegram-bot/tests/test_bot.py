@@ -517,7 +517,9 @@ def test_ops_sync_admin_success(monkeypatch):
 
     assert update.message.sent
     text = update.message.sent[0]["text"]
-    assert text == "✅ Людей в Участиях 2026: 1"
+    assert text == "✅ Кэш Гриста обновлен\n✅ Людей в Участиях 2026: 1"
+
+
 def test_ops_check_reports_memberships(monkeypatch):
     bot = load_bot_module(monkeypatch)
 
@@ -552,14 +554,14 @@ def test_ops_check_reports_memberships(monkeypatch):
     assert "Отчет по участнику" in text
     assert "👤 Telegram: @test_member" in text
     assert "Имя: Test Person" in text
-    assert "🔢 ID в Человеках: 21" in text
-    assert "📋 Найдет в Человеках: найден" in text
+    assert "ID в Человеках: 21" in text
+    assert "Найден в Человеках: найден" in text
     assert "Черный список: нет" in text
     assert "Участия 2026: найден" in text
     assert "Регистрация в Matrix: уже зарегистрирован (@test_member:insomniafest.ru)" in text
     assert "Комната организаторов: да" in text
     assert "👥 Команды:" in text
-    assert "• #2 2026.GR(Организатор) — организатор" in text
+    assert "• 2026.GR(Организатор) — организатор" in text
 
 
 def test_ops_register_reports_full_flow_results(monkeypatch):
@@ -2526,8 +2528,8 @@ def test_ops_check_handles_check_failure(monkeypatch):
     asyncio.run(bot.ops_check(update, context))
 
     text = update.message.sent[-1]["text"]
-    assert "📋 Найдет в Человеках: не удалось проверить" in text
-    assert "🎟️ Участия 2026: не удалось проверить" in text
+    assert "Найден в Человеках: не удалось проверить" in text
+    assert "Участия 2026: не удалось проверить" in text
     assert "👥 Команды: не удалось определить" in text
 
 
@@ -2583,8 +2585,8 @@ def test_ops_check_not_eligible(monkeypatch):
     asyncio.run(bot.ops_check(update, context))
 
     text = update.message.sent[-1]["text"]
-    assert "📋 Найдет в Человеках: не найден" in text
-    assert "🎟️ Участия 2026: не найден" in text
+    assert "Найден в Человеках: не найден" in text
+    assert "Участия 2026: не найден" in text
     assert "👥 Команды: не указаны" in text
 
 
@@ -2613,8 +2615,8 @@ def test_ops_check_reports_no_memberships(monkeypatch):
     asyncio.run(bot.ops_check(update, context))
 
     text = update.message.sent[-1]["text"]
-    assert "🔢 ID в Человеках: 21" in text
-    assert "📋 Найдет в Человеках: найден" in text
+    assert "ID в Человеках: 21" in text
+    assert "Найден в Человеках: найден" in text
     assert "Участия 2026: найден" in text
     assert "Регистрация в Matrix: не удалось определить (@alice:insomniafest.ru)" in text
     assert "Комната организаторов: нет" in text
@@ -2649,8 +2651,8 @@ def test_ops_check_reports_people_without_participations(monkeypatch):
     asyncio.run(bot.ops_check(update, context))
 
     text = update.message.sent[-1]["text"]
-    assert "🔢 ID в Человеках: 21" in text
-    assert "📋 Найдет в Человеках: найден" in text
+    assert "ID в Человеках: 21" in text
+    assert "Найден в Человеках: найден" in text
     assert "Черный список: нет" in text
     assert "Участия 2026: не найден" in text
     assert "Регистрация в Matrix: не зарегистрирован (@alice:insomniafest.ru)" in text
@@ -2777,12 +2779,11 @@ def test_ops_register_account_active_path_reports_existing(monkeypatch):
     asyncio.run(bot.ops_register(update, context))
 
     text = update.message.sent[-1]["text"]
-    assert "🔢 ID в People: 21" in text
+    assert "person_row_id=21" in text
     assert "создан=false" in text
     assert "реактивирован=false" in text
     assert "временный_пароль=" not in text
-    assert "👥 Команды:" in text
-    assert "• #72 Точка сборки — организатор" in text
+    assert "добавление_в_командные_комнаты=true" in text
 
 def test_ops_register_reactivation_token_missing_path_reports_existing(monkeypatch):
     bot = load_bot_module(monkeypatch)
@@ -3043,13 +3044,13 @@ def test_ops_check_accepts_matrix_id(monkeypatch):
     text = update.message.sent[-1]["text"]
     assert "Matrix ID: @alice:insomniafest.ru" in text
     assert "Имя: Alice" in text
-    assert "🔢 ID в Человеках: 21" in text
-    assert "📋 Найдет в Человеках: найден" in text
+    assert "ID в Человеках: 21" in text
+    assert "Найден в Человеках: найден" in text
     assert "Участия 2026: найден" in text
     assert "Регистрация в Matrix: уже зарегистрирован (@alice:insomniafest.ru)" in text
     assert "Комната организаторов: да" in text
     assert "👥 Команды:" in text
-    assert "• #72 Точка сборки — организатор" in text
+    assert "• Точка сборки — организатор" in text
 
 
 def test_ops_join_teams_accepts_matrix_id(monkeypatch):

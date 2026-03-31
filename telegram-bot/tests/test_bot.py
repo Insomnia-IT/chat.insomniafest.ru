@@ -157,6 +157,111 @@ def test_check_user_eligibility_sync_failure_with_empty_cache(monkeypatch):
     assert memberships == {}
 
 
+def test_sync_grist_people_matrix_cache_builds_registration_mappings(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    async def fake_fetch_grist_people_via_records_api():
+        return [
+            {
+                "id": 21,
+                "fields": {
+                    "id": 21,
+                    "name": "Alice",
+                    "Telegram": "@Alice",
+                    "telegram_norm_TF": "alice",
+                    "matrix_id": "@alice:insomniafest.ru",
+                    "isInBL": "Нет",
+                },
+            },
+            {
+                "id": 22,
+                "fields": {
+                    "id": 22,
+                    "name": "Bob",
+                    "Telegram": "@bob",
+                    "telegram_norm_TF": "bob",
+                    "matrix_id": "@bob:insomniafest.ru",
+                    "isInBL": "Да",
+                },
+            },
+        ]
+
+    monkeypatch.setattr(bot, "fetch_grist_people_via_records_api", fake_fetch_grist_people_via_records_api)
+
+    ok = asyncio.run(bot.sync_grist_people_matrix_cache(force_full=True))
+
+    assert ok is True
+    assert bot.grist_people_handle_to_person_row_id["alice"] == 21
+    assert bot.grist_people_handle_to_person_row_id["bob"] == 22
+    assert bot.grist_matrix_id_to_person_row_id["@alice:insomniafest.ru"] == 21
+    assert bot.grist_people_person_row_to_person_name[21] == "Alice"
+    assert bot.grist_people_person_row_to_is_not_blacklisted[21] is True
+    assert bot.grist_people_person_row_to_is_not_blacklisted[22] is False
+
+
+def test_check_registration_eligibility_fake_handle_uses_people_row(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.grist_people_handle_to_person_row_id.clear()
+    bot.grist_people_person_row_to_person_name.clear()
+    bot.grist_people_person_row_to_is_not_blacklisted.clear()
+    bot.grist_handle_to_person_row_id.clear()
+    bot.grist_person_row_to_team_memberships.clear()
+
+    bot.grist_people_person_row_to_person_name[21] = "Alice"
+    bot.grist_people_person_row_to_is_not_blacklisted[21] = True
+    bot.grist_handle_to_person_row_id["$alice"] = 21
+    bot.grist_person_row_to_team_memberships[21] = {72: True}
+
+    async def fake_sync_grist_people_matrix_cache(force_full=False):
+        return True
+
+    async def fake_sync_grist_cache(force_full=False):
+        return True
+
+    monkeypatch.setattr(bot, "sync_grist_people_matrix_cache", fake_sync_grist_people_matrix_cache)
+    monkeypatch.setattr(bot, "sync_grist_cache", fake_sync_grist_cache)
+
+    eligible, check_ok, person_name, memberships = asyncio.run(
+        bot.check_registration_eligibility("@$alice")
+    )
+
+    assert eligible is True
+    assert check_ok is True
+    assert person_name == "Alice"
+    assert memberships == {72: True}
+
+
+def test_check_registration_eligibility_blacklisted_person(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+
+    bot.grist_people_handle_to_person_row_id.clear()
+    bot.grist_people_person_row_to_person_name.clear()
+    bot.grist_people_person_row_to_is_not_blacklisted.clear()
+
+    bot.grist_people_handle_to_person_row_id["alice"] = 21
+    bot.grist_people_person_row_to_person_name[21] = "Alice"
+    bot.grist_people_person_row_to_is_not_blacklisted[21] = False
+
+    async def fake_sync_grist_people_matrix_cache(force_full=False):
+        return True
+
+    async def fake_sync_grist_cache(force_full=False):
+        return True
+
+    monkeypatch.setattr(bot, "sync_grist_people_matrix_cache", fake_sync_grist_people_matrix_cache)
+    monkeypatch.setattr(bot, "sync_grist_cache", fake_sync_grist_cache)
+
+    eligible, check_ok, person_name, memberships = asyncio.run(
+        bot.check_registration_eligibility("@alice")
+    )
+
+    assert eligible is False
+    assert check_ok is True
+    assert person_name == "Alice"
+    assert memberships == {}
+
+
 def test_sync_grist_cache_builds_team_memberships_and_teams(monkeypatch):
     bot = load_bot_module(monkeypatch)
 
@@ -256,8 +361,8 @@ def test_sync_grist_cache_collects_person_row_id(monkeypatch):
 def test_update_grist_people_matrix_id_success(monkeypatch):
     bot = load_bot_module(monkeypatch)
 
-    bot.grist_handle_to_person_row_id.clear()
-    bot.grist_handle_to_person_row_id["alice"] = 21
+    bot.grist_people_handle_to_person_row_id.clear()
+    bot.grist_people_handle_to_person_row_id["alice"] = 21
     captured = {}
 
     async def fake_request_with_retries(client, method, url, **kwargs):
@@ -280,6 +385,7 @@ def test_update_grist_people_matrix_id_success(monkeypatch):
 
 def test_update_grist_people_matrix_id_missing_person_row(monkeypatch):
     bot = load_bot_module(monkeypatch)
+    bot.grist_people_handle_to_person_row_id.clear()
     bot.grist_handle_to_person_row_id.clear()
 
     ok, code = asyncio.run(bot.update_grist_people_matrix_id("alice", "@alice:insomniafest.ru"))
@@ -434,7 +540,7 @@ def test_ops_register_reports_full_flow_results(monkeypatch):
     bot.grist_team_id_to_name.clear()
     bot.grist_team_id_to_name.update({1: "OneLab", 2: "GR"})
 
-    async def fake_check_user_eligibility(handle):
+    async def fake_check_registration_eligibility(handle):
         return True, True, "Test Person", {1: False, 2: True}
 
     async def fake_register_synapse_user(username, password):
@@ -456,7 +562,7 @@ def test_ops_register_reports_full_flow_results(monkeypatch):
         assert memberships == {1: False, 2: True}
         return False, ["GR"], ["GR"]
 
-    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
+    monkeypatch.setattr(bot, "check_registration_eligibility", fake_check_registration_eligibility)
     monkeypatch.setattr(bot, "register_synapse_user", fake_register_synapse_user)
     monkeypatch.setattr(bot, "set_synapse_display_name", fake_set_synapse_display_name)
     monkeypatch.setattr(bot, "join_user_to_rooms", fake_join_user_to_rooms)
@@ -1273,7 +1379,7 @@ def test_reset_password_success(monkeypatch):
     bot.user_registration_times.clear()
     captured = {}
 
-    async def fake_check_user_eligibility(username):
+    async def fake_check_registration_eligibility(username):
         captured["eligibility"] = username
         return True, True, "Example User", {72: False}
 
@@ -1282,7 +1388,7 @@ def test_reset_password_success(monkeypatch):
         captured["password"] = password
         return True, None
 
-    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
+    monkeypatch.setattr(bot, "check_registration_eligibility", fake_check_registration_eligibility)
     monkeypatch.setattr(bot, "reset_synapse_password", fake_reset_synapse_password)
 
     asyncio.run(bot.reset_password(update, context))
@@ -1385,10 +1491,10 @@ def test_register_eligibility_check_failed(monkeypatch):
 
     bot.user_registration_times.clear()
 
-    async def fake_check_user_eligibility(username):
+    async def fake_check_registration_eligibility(username):
         return False, False, None, {}
 
-    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
+    monkeypatch.setattr(bot, "check_registration_eligibility", fake_check_registration_eligibility)
 
     asyncio.run(bot.register(update, context))
 
@@ -1404,10 +1510,10 @@ def test_register_not_eligible(monkeypatch):
 
     bot.user_registration_times.clear()
 
-    async def fake_check_user_eligibility(username):
+    async def fake_check_registration_eligibility(username):
         return False, True, None, {}
 
-    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
+    monkeypatch.setattr(bot, "check_registration_eligibility", fake_check_registration_eligibility)
 
     asyncio.run(bot.register(update, context))
 
@@ -1422,7 +1528,7 @@ def test_register_user_in_use(monkeypatch):
 
     bot.user_registration_times.clear()
 
-    async def fake_check_user_eligibility(username):
+    async def fake_check_registration_eligibility(username):
         return True, True, "Alice", {72: False}
 
     async def fake_register_synapse_user(username, password):
@@ -1431,7 +1537,7 @@ def test_register_user_in_use(monkeypatch):
     async def fake_reactivate_synapse_user(username, password):
         return False, "ACCOUNT_ACTIVE"
 
-    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
+    monkeypatch.setattr(bot, "check_registration_eligibility", fake_check_registration_eligibility)
     monkeypatch.setattr(bot, "register_synapse_user", fake_register_synapse_user)
     monkeypatch.setattr(bot, "reactivate_synapse_user", fake_reactivate_synapse_user)
 
@@ -1448,7 +1554,7 @@ def test_register_user_in_use_reactivated(monkeypatch):
 
     bot.user_registration_times.clear()
 
-    async def fake_check_user_eligibility(username):
+    async def fake_check_registration_eligibility(username):
         return True, True, "Alice", {72: False}
 
     async def fake_register_synapse_user(username, password):
@@ -1466,7 +1572,7 @@ def test_register_user_in_use_reactivated(monkeypatch):
     async def fake_join_user_to_team_rooms(username, memberships):
         return True, [], []
 
-    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
+    monkeypatch.setattr(bot, "check_registration_eligibility", fake_check_registration_eligibility)
     monkeypatch.setattr(bot, "register_synapse_user", fake_register_synapse_user)
     monkeypatch.setattr(bot, "reactivate_synapse_user", fake_reactivate_synapse_user)
     monkeypatch.setattr(bot, "set_synapse_display_name", fake_set_synapse_display_name)
@@ -1488,7 +1594,7 @@ def test_register_success_happy_path(monkeypatch):
     bot.user_registration_times.clear()
     captured = {}
 
-    async def fake_check_user_eligibility(username):
+    async def fake_check_registration_eligibility(username):
         return True, True, "Alice", {72: True, 73: False}
 
     async def fake_register_synapse_user(username, password):
@@ -1504,7 +1610,7 @@ def test_register_success_happy_path(monkeypatch):
     async def fake_join_user_to_team_rooms(username, memberships):
         return True, [], []
 
-    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
+    monkeypatch.setattr(bot, "check_registration_eligibility", fake_check_registration_eligibility)
     monkeypatch.setattr(bot, "register_synapse_user", fake_register_synapse_user)
     monkeypatch.setattr(bot, "set_synapse_display_name", fake_set_synapse_display_name)
     monkeypatch.setattr(bot, "join_user_to_rooms", fake_join_user_to_rooms)
@@ -1532,7 +1638,7 @@ def test_register_normalizes_mixed_case_username(monkeypatch):
     bot.user_registration_times.clear()
     captured = {}
 
-    async def fake_check_user_eligibility(username):
+    async def fake_check_registration_eligibility(username):
         captured["eligibility"] = username
         return True, True, "Alice", {72: False}
 
@@ -1552,7 +1658,7 @@ def test_register_normalizes_mixed_case_username(monkeypatch):
         captured["join_team_rooms"] = username
         return True, [], []
 
-    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
+    monkeypatch.setattr(bot, "check_registration_eligibility", fake_check_registration_eligibility)
     monkeypatch.setattr(bot, "register_synapse_user", fake_register_synapse_user)
     monkeypatch.setattr(bot, "set_synapse_display_name", fake_set_synapse_display_name)
     monkeypatch.setattr(bot, "join_user_to_rooms", fake_join_user_to_rooms)
@@ -1577,7 +1683,7 @@ def test_register_success_with_join_failures(monkeypatch):
     bot.user_registration_times.clear()
     notified = []
 
-    async def fake_check_user_eligibility(username):
+    async def fake_check_registration_eligibility(username):
         return True, True, "Alice", {72: True}
 
     async def fake_register_synapse_user(username, password):
@@ -1595,7 +1701,7 @@ def test_register_success_with_join_failures(monkeypatch):
     async def fake_notify_owner(context_obj, message):
         notified.append(message)
 
-    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
+    monkeypatch.setattr(bot, "check_registration_eligibility", fake_check_registration_eligibility)
     monkeypatch.setattr(bot, "register_synapse_user", fake_register_synapse_user)
     monkeypatch.setattr(bot, "set_synapse_display_name", fake_set_synapse_display_name)
     monkeypatch.setattr(bot, "join_user_to_rooms", fake_join_user_to_rooms)
@@ -1619,7 +1725,7 @@ def test_register_notifies_owner_on_registration_failure(monkeypatch):
     bot.user_registration_times.clear()
     notified = []
 
-    async def fake_check_user_eligibility(username):
+    async def fake_check_registration_eligibility(username):
         return True, True, "Alice", {72: False}
 
     async def fake_register_synapse_user(username, password):
@@ -1628,7 +1734,7 @@ def test_register_notifies_owner_on_registration_failure(monkeypatch):
     async def fake_notify_owner(context_obj, message):
         notified.append(message)
 
-    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
+    monkeypatch.setattr(bot, "check_registration_eligibility", fake_check_registration_eligibility)
     monkeypatch.setattr(bot, "register_synapse_user", fake_register_synapse_user)
     monkeypatch.setattr(bot, "notify_owner", fake_notify_owner)
 
@@ -1648,13 +1754,13 @@ def test_register_exception_path(monkeypatch):
     bot.user_registration_times.clear()
     notified = []
 
-    async def fail_check_user_eligibility(username):
+    async def fail_check_registration_eligibility(username):
         raise RuntimeError("test failure")
 
     async def fake_notify_owner(context_obj, message):
         notified.append(message)
 
-    monkeypatch.setattr(bot, "check_user_eligibility", fail_check_user_eligibility)
+    monkeypatch.setattr(bot, "check_registration_eligibility", fail_check_registration_eligibility)
     monkeypatch.setattr(bot, "notify_owner", fake_notify_owner)
 
     asyncio.run(bot.register(update, context))
@@ -1671,7 +1777,7 @@ def test_register_fake_tg_uses_stripped_localpart_and_cleans_grist(monkeypatch):
     bot.user_registration_times.clear()
     captured = {}
 
-    async def fake_check_user_eligibility(handle):
+    async def fake_check_registration_eligibility(handle):
         captured["eligibility_handle"] = handle
         return True, True, "Alice", {72: False}
 
@@ -1697,7 +1803,7 @@ def test_register_fake_tg_uses_stripped_localpart_and_cleans_grist(monkeypatch):
     async def fake_join_user_to_team_rooms(username, memberships):
         return True, [], []
 
-    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
+    monkeypatch.setattr(bot, "check_registration_eligibility", fake_check_registration_eligibility)
     monkeypatch.setattr(bot, "register_synapse_user", fake_register_synapse_user)
     monkeypatch.setattr(bot, "set_synapse_display_name", fake_set_synapse_display_name)
     monkeypatch.setattr(bot, "update_grist_people_matrix_id", fake_update_grist_people_matrix_id)
@@ -2255,10 +2361,10 @@ def test_reset_password_eligibility_check_failed(monkeypatch):
 
     bot.user_registration_times.clear()
 
-    async def fake_check_user_eligibility(username):
+    async def fake_check_registration_eligibility(username):
         return False, False, None, {}
 
-    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
+    monkeypatch.setattr(bot, "check_registration_eligibility", fake_check_registration_eligibility)
 
     asyncio.run(bot.reset_password(update, context))
 
@@ -2273,15 +2379,15 @@ def test_reset_password_not_eligible(monkeypatch):
 
     bot.user_registration_times.clear()
 
-    async def fake_check_user_eligibility(username):
+    async def fake_check_registration_eligibility(username):
         return False, True, None, {}
 
-    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
+    monkeypatch.setattr(bot, "check_registration_eligibility", fake_check_registration_eligibility)
 
     asyncio.run(bot.reset_password(update, context))
 
     assert len(update.message.sent) == 2
-    assert "не найден в списке волонтеров" in update.message.sent[1]["text"].lower()
+    assert "не найден в таблице people" in update.message.sent[1]["text"].lower()
 
 
 def test_reset_password_token_missing(monkeypatch):
@@ -2291,13 +2397,13 @@ def test_reset_password_token_missing(monkeypatch):
 
     bot.user_registration_times.clear()
 
-    async def fake_check_user_eligibility(username):
+    async def fake_check_registration_eligibility(username):
         return True, True, "Alice", {72: False}
 
     async def fake_reset_synapse_password(username, password):
         return False, "RESET_TOKEN_MISSING"
 
-    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
+    monkeypatch.setattr(bot, "check_registration_eligibility", fake_check_registration_eligibility)
     monkeypatch.setattr(bot, "reset_synapse_password", fake_reset_synapse_password)
 
     asyncio.run(bot.reset_password(update, context))
@@ -2313,7 +2419,7 @@ def test_reset_password_failure_notifies_owner(monkeypatch):
     bot.user_registration_times.clear()
     notified = []
 
-    async def fake_check_user_eligibility(username):
+    async def fake_check_registration_eligibility(username):
         return True, True, "Alice", {72: False}
 
     async def fake_reset_synapse_password(username, password):
@@ -2322,7 +2428,7 @@ def test_reset_password_failure_notifies_owner(monkeypatch):
     async def fake_notify_owner(context_obj, message):
         notified.append(message)
 
-    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
+    monkeypatch.setattr(bot, "check_registration_eligibility", fake_check_registration_eligibility)
     monkeypatch.setattr(bot, "reset_synapse_password", fake_reset_synapse_password)
     monkeypatch.setattr(bot, "notify_owner", fake_notify_owner)
 
@@ -2390,7 +2496,7 @@ def test_ops_register_reports_reactivation_failure(monkeypatch):
     bot.ADMIN_TELEGRAM_IDS.clear()
     bot.ADMIN_TELEGRAM_IDS.add(1)
 
-    async def fake_check_user_eligibility(handle):
+    async def fake_check_registration_eligibility(handle):
         return True, True, "Alice", {72: False}
 
     async def fake_register_synapse_user(username, password):
@@ -2399,7 +2505,7 @@ def test_ops_register_reports_reactivation_failure(monkeypatch):
     async def fake_reactivate_synapse_user(username, password):
         return False, "BROKEN"
 
-    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
+    monkeypatch.setattr(bot, "check_registration_eligibility", fake_check_registration_eligibility)
     monkeypatch.setattr(bot, "register_synapse_user", fake_register_synapse_user)
     monkeypatch.setattr(bot, "reactivate_synapse_user", fake_reactivate_synapse_user)
 
@@ -2462,10 +2568,10 @@ def test_ops_register_check_failed(monkeypatch):
     bot.ADMIN_TELEGRAM_IDS.clear()
     bot.ADMIN_TELEGRAM_IDS.add(1)
 
-    async def fake_check_user_eligibility(handle):
+    async def fake_check_registration_eligibility(handle):
         return False, False, None, {}
 
-    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
+    monkeypatch.setattr(bot, "check_registration_eligibility", fake_check_registration_eligibility)
 
     update = DummyUpdate(user_id=1, username="admin")
     context = DummyContext(args=["@alice"])
@@ -2481,17 +2587,17 @@ def test_ops_register_not_eligible(monkeypatch):
     bot.ADMIN_TELEGRAM_IDS.clear()
     bot.ADMIN_TELEGRAM_IDS.add(1)
 
-    async def fake_check_user_eligibility(handle):
+    async def fake_check_registration_eligibility(handle):
         return False, True, None, {}
 
-    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
+    monkeypatch.setattr(bot, "check_registration_eligibility", fake_check_registration_eligibility)
 
     update = DummyUpdate(user_id=1, username="admin")
     context = DummyContext(args=["@alice"])
 
     asyncio.run(bot.ops_register(update, context))
 
-    assert update.message.sent[-1]["text"] == "❌ Участник не найден: @alice"
+    assert update.message.sent[-1]["text"] == "❌ Человек не найден в таблице People или находится в черном списке: @alice"
 
 
 def test_ops_register_registration_failed(monkeypatch):
@@ -2500,13 +2606,13 @@ def test_ops_register_registration_failed(monkeypatch):
     bot.ADMIN_TELEGRAM_IDS.clear()
     bot.ADMIN_TELEGRAM_IDS.add(1)
 
-    async def fake_check_user_eligibility(handle):
+    async def fake_check_registration_eligibility(handle):
         return True, True, "Alice", {72: False}
 
     async def fake_register_synapse_user(username, password):
         return False, "REGISTER_FAILED"
 
-    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
+    monkeypatch.setattr(bot, "check_registration_eligibility", fake_check_registration_eligibility)
     monkeypatch.setattr(bot, "register_synapse_user", fake_register_synapse_user)
 
     update = DummyUpdate(user_id=1, username="admin")
@@ -2523,7 +2629,7 @@ def test_ops_register_account_active_path_reports_existing(monkeypatch):
     bot.ADMIN_TELEGRAM_IDS.clear()
     bot.ADMIN_TELEGRAM_IDS.add(1)
 
-    async def fake_check_user_eligibility(handle):
+    async def fake_check_registration_eligibility(handle):
         return True, True, "Alice", {72: False}
 
     async def fake_register_synapse_user(username, password):
@@ -2541,7 +2647,7 @@ def test_ops_register_account_active_path_reports_existing(monkeypatch):
     async def fake_join_user_to_team_rooms(username, memberships):
         return True, [], []
 
-    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
+    monkeypatch.setattr(bot, "check_registration_eligibility", fake_check_registration_eligibility)
     monkeypatch.setattr(bot, "register_synapse_user", fake_register_synapse_user)
     monkeypatch.setattr(bot, "reactivate_synapse_user", fake_reactivate_synapse_user)
     monkeypatch.setattr(bot, "set_synapse_display_name", fake_set_synapse_display_name)
@@ -2565,7 +2671,7 @@ def test_ops_register_reactivation_token_missing_path_reports_existing(monkeypat
     bot.ADMIN_TELEGRAM_IDS.clear()
     bot.ADMIN_TELEGRAM_IDS.add(1)
 
-    async def fake_check_user_eligibility(handle):
+    async def fake_check_registration_eligibility(handle):
         return True, True, None, {72: True}
 
     async def fake_register_synapse_user(username, password):
@@ -2580,7 +2686,7 @@ def test_ops_register_reactivation_token_missing_path_reports_existing(monkeypat
     async def fake_join_user_to_team_rooms(username, memberships):
         return True, [], []
 
-    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
+    monkeypatch.setattr(bot, "check_registration_eligibility", fake_check_registration_eligibility)
     monkeypatch.setattr(bot, "register_synapse_user", fake_register_synapse_user)
     monkeypatch.setattr(bot, "reactivate_synapse_user", fake_reactivate_synapse_user)
     monkeypatch.setattr(bot, "join_user_to_rooms", fake_join_user_to_rooms)
@@ -2605,7 +2711,7 @@ def test_ops_register_fake_tg_uses_stripped_localpart_and_cleans_grist(monkeypat
     bot.ADMIN_TELEGRAM_IDS.add(1)
     captured = {}
 
-    async def fake_check_user_eligibility(handle):
+    async def fake_check_registration_eligibility(handle):
         captured["eligibility_handle"] = handle
         return True, True, "Alice", {72: False}
 
@@ -2627,7 +2733,7 @@ def test_ops_register_fake_tg_uses_stripped_localpart_and_cleans_grist(monkeypat
     async def fake_join_user_to_team_rooms(username, memberships):
         return True, [], []
 
-    monkeypatch.setattr(bot, "check_user_eligibility", fake_check_user_eligibility)
+    monkeypatch.setattr(bot, "check_registration_eligibility", fake_check_registration_eligibility)
     monkeypatch.setattr(bot, "register_synapse_user", fake_register_synapse_user)
     monkeypatch.setattr(bot, "set_synapse_display_name", fake_set_synapse_display_name)
     monkeypatch.setattr(bot, "clear_fake_telegram_handle_in_grist", fake_clear_fake_telegram_handle_in_grist)

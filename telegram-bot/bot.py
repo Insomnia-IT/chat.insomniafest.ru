@@ -82,6 +82,9 @@ grist_handle_to_person_row_id = {}
 grist_person_row_to_person_name = {}
 grist_person_row_to_team_memberships = {}
 grist_matrix_id_to_person_row_id = {}
+grist_people_handle_to_person_row_id = {}
+grist_people_person_row_to_person_name = {}
+grist_people_person_row_to_is_not_blacklisted = {}
 grist_team_id_to_name = {}
 grist_max_record_id = 0
 grist_last_full_sync = 0.0
@@ -204,6 +207,11 @@ def parse_grist_bool(value) -> bool:
     return False
 
 
+def is_not_blacklisted_in_grist(value) -> bool:
+    """Return True only when People.isInBL explicitly says the person is not blacklisted."""
+    return isinstance(value, str) and value.strip().lower() == "нет"
+
+
 async def fetch_grist_records_via_records_api() -> list:
     """Fetch eligible records using Grist records API."""
     url = f"https://grist.insomniafest.ru/api/docs/{GRIST_DOC_ID}/tables/{GRIST_TABLE_ID}/records"
@@ -283,7 +291,7 @@ async def fetch_grist_people_via_records_api() -> list:
 
 
 async def sync_grist_people_matrix_cache(force_full: bool = False) -> bool:
-    """Sync Matrix ID -> person row mapping from Grist People table."""
+    """Sync registration-related caches from Grist People table."""
     global grist_people_last_full_sync
 
     async with grist_cache_lock:
@@ -302,6 +310,9 @@ async def sync_grist_people_matrix_cache(force_full: bool = False) -> bool:
             return False
 
         grist_matrix_id_to_person_row_id.clear()
+        grist_people_handle_to_person_row_id.clear()
+        grist_people_person_row_to_person_name.clear()
+        grist_people_person_row_to_is_not_blacklisted.clear()
 
         for record in people_records:
             fields = record.get("fields", {})
@@ -309,9 +320,27 @@ async def sync_grist_people_matrix_cache(force_full: bool = False) -> bool:
             if person_row_id is None:
                 person_row_id = record.get("id")
             matrix_id = normalize_matrix_id(fields.get("matrix_id"))
+            normalized_handle = normalize_telegram_handle(
+                fields.get("telegram_norm_TF") or fields.get("Telegram")
+            )
+            person_name = fields.get("name")
+            if not isinstance(person_name, str) or not person_name.strip():
+                person_name = fields.get("title")
+            is_not_blacklisted = is_not_blacklisted_in_grist(fields.get("isInBL"))
 
             person_row_id = parse_grist_ref_id(person_row_id)
-            if person_row_id is None or not matrix_id:
+            if person_row_id is None:
+                continue
+
+            grist_people_person_row_to_is_not_blacklisted[person_row_id] = is_not_blacklisted
+
+            if isinstance(person_name, str) and person_name.strip():
+                grist_people_person_row_to_person_name[person_row_id] = person_name.strip()
+
+            if normalized_handle:
+                grist_people_handle_to_person_row_id[normalized_handle] = person_row_id
+
+            if not matrix_id:
                 continue
 
             grist_matrix_id_to_person_row_id[matrix_id] = person_row_id
@@ -454,7 +483,20 @@ async def notify_owner(context: ContextTypes.DEFAULT_TYPE, message: str) -> None
 async def update_grist_people_matrix_id(handle: str, matrix_id: str) -> tuple[bool, str | None]:
     """Write Matrix ID to Grist People table for the user behind telegram handle."""
     normalized = normalize_telegram_handle(handle)
-    person_row_id = grist_handle_to_person_row_id.get(normalized)
+    if not normalized:
+        return False, "HANDLE_EMPTY"
+
+    person_row_id = grist_people_handle_to_person_row_id.get(normalized)
+    if person_row_id is None:
+        people_sync_ok = await sync_grist_people_matrix_cache(force_full=False)
+        if people_sync_ok or grist_people_handle_to_person_row_id:
+            person_row_id = grist_people_handle_to_person_row_id.get(normalized)
+
+    if person_row_id is None:
+        sync_ok = await sync_grist_cache(force_full=False)
+        if sync_ok or grist_handle_to_person_row_id:
+            person_row_id = grist_handle_to_person_row_id.get(normalized)
+
     if person_row_id is None:
         return False, "PERSON_ROW_ID_MISSING"
 
@@ -565,6 +607,54 @@ async def clear_fake_telegram_handle_in_grist(handle: str) -> tuple[bool, str | 
         return False, "CLEANUP_FAILED"
 
     return True, None
+
+
+async def check_registration_eligibility(telegram_handle: str) -> tuple[bool, bool, str | None, dict[int, bool]]:
+    """Return registration eligibility using People table and People.isInBL."""
+    try:
+        if not telegram_handle:
+            logger.warning("Empty telegram handle provided for registration")
+            return False, True, None, {}
+
+        handle = normalize_telegram_handle(telegram_handle)
+        if not handle:
+            logger.warning("Invalid telegram handle provided for registration: %s", telegram_handle)
+            return False, True, None, {}
+
+        people_sync_ok = await sync_grist_people_matrix_cache(force_full=False)
+        if not people_sync_ok and not (
+            grist_people_handle_to_person_row_id or grist_people_person_row_to_is_not_blacklisted
+        ):
+            logger.warning("Grist people cache unavailable and empty")
+            return False, False, None, {}
+
+        person_row_id = grist_people_handle_to_person_row_id.get(handle)
+
+        sync_ok = await sync_grist_cache(force_full=False)
+        if person_row_id is None and (sync_ok or grist_handle_to_person_row_id):
+            person_row_id = grist_handle_to_person_row_id.get(handle)
+
+        if person_row_id is None:
+            logger.warning("User %s not found in Grist People cache", handle)
+            return False, True, None, {}
+
+        person_name = (
+            grist_people_person_row_to_person_name.get(person_row_id)
+            or grist_person_row_to_person_name.get(person_row_id)
+        )
+
+        if not grist_people_person_row_to_is_not_blacklisted.get(person_row_id, False):
+            logger.warning("User %s is blacklisted in Grist People", handle)
+            return False, True, person_name, {}
+
+        memberships = grist_person_row_to_team_memberships.get(person_row_id, {})
+        if not memberships:
+            memberships = grist_handle_to_team_memberships.get(handle, {})
+
+        return True, True, person_name, dict(memberships)
+    except Exception as e:
+        logger.error(f"Error checking registration eligibility for {telegram_handle}: {e}")
+        return False, False, None, {}
 
 
 async def check_synapse_admin_token() -> tuple[bool, str | None]:
@@ -704,8 +794,8 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         await update.message.reply_text("Проверяю вашу благонадежность...")
         
-        # Check if user is in the Grist list
-        is_eligible, eligibility_check_ok, person_name, team_memberships = await check_user_eligibility(original_handle)
+        # Registration is allowed for people from Grist People table who are not blacklisted.
+        is_eligible, eligibility_check_ok, person_name, team_memberships = await check_registration_eligibility(original_handle)
 
         if not eligibility_check_ok:
             await update.message.reply_text(
@@ -715,7 +805,7 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         
         if not is_eligible:
             await update.message.reply_text("""
-❌ Ничего не вышло. Скорее всего ваш HR не добавил вас в список волонтеров 2026 (шепните ему волшебное слово: "Участия 2026"). Попросите его это сделать, а потом попробуйте снова.
+❌ Ничего не вышло. Мы не нашли вас в таблице People или для вас включен черный список. Напишите своему HR и попросите проверить карточку человека в Гристе.
             """)
             return
         
@@ -905,7 +995,7 @@ async def reset_password(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     try:
         await update.message.reply_text("Проверяю вашу благонадежность...")
 
-        is_eligible, eligibility_check_ok, _, _ = await check_user_eligibility(username)
+        is_eligible, eligibility_check_ok, _, _ = await check_registration_eligibility(username)
 
         if not eligibility_check_ok:
             await update.message.reply_text(
@@ -915,7 +1005,7 @@ async def reset_password(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
         if not is_eligible:
             await update.message.reply_text(
-                "❌ Ваш Telegram-аккаунт не найден в списке волонтеров 2026."
+                "❌ Ваш Telegram-аккаунт не найден в таблице People или для вас включен черный список."
             )
             return
 
@@ -1034,7 +1124,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         message += (
             "\n\n"
             "🔐 Команды HR\n\n"
-            "(Все данные бот берет из таблицы Участия 2026 в Гристе)\n\n"
+            "(/hr_register проверяет таблицу People и поле isInBL=\"Нет\"; команды по командам используют Участия 2026)\n\n"
             "Как это работает:\n"
             "- /hr_check и /hr_sync_teams принимают @телеграм_ник или Matrix ID вида @username:insomniafest.ru.\n"
             "- Если в Гристе для регистрации используется временный telegram-ник с '$' в начале (например, $ivan), "
@@ -1042,7 +1132,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "- После успешной регистрации временный telegram-ник очищается в Гристе автоматически.\n\n"
             "/hr_sync - принудительно обновить кэш Грист и показать счетчики (полезно сделать если человек был только что добавлен в Участия 2026).\n"
             "/hr_check @телеграм_ник | @username:insomniafest.ru - проверить есть ли человек в Участиях 2026 и членство в командах.\n"
-            "/hr_register @телеграм_ник - выполнить полную регистрацию: аккаунт в чате и автодобавление в комнаты.\n"
+            "/hr_register @телеграм_ник - выполнить полную регистрацию: человек должен быть в таблице People и не быть в черном списке.\n"
             "/hr_sync_teams @телеграм_ник | @username:insomniafest.ru - перепроверить команды участника и добавить в командные комнаты (создаст комнаты при необходимости)."
         )
 
@@ -1280,6 +1370,22 @@ async def _hr_require_eligible(
     return person_name, memberships
 
 
+async def _hr_require_registration_eligible(
+    update: Update, handle: str
+) -> tuple[str | None, dict[int, bool]] | None:
+    """Check registration eligibility in People and send standard HR error replies on failure."""
+    eligible, check_ok, person_name, memberships = await check_registration_eligibility(handle)
+    if not check_ok:
+        await update.effective_message.reply_text("❌ Не удалось проверить данные участника")
+        return None
+    if not eligible:
+        await update.effective_message.reply_text(
+            f"❌ Человек не найден в таблице People или находится в черном списке: {handle}"
+        )
+        return None
+    return person_name, memberships
+
+
 async def ops_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Check eligibility and team memberships for a Telegram handle. Hidden admin-only command."""
     if not await require_hr(update):
@@ -1337,7 +1443,7 @@ async def ops_register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     handle = context.args[0]
-    result = await _hr_require_eligible(update, handle)
+    result = await _hr_require_registration_eligible(update, handle)
     if result is None:
         return
     person_name, memberships = result
@@ -1510,7 +1616,10 @@ async def check_user_eligibility(telegram_handle: str) -> tuple[bool, bool, str 
                 return False, True, None, {}
 
             memberships = grist_person_row_to_team_memberships.get(person_row_id, {})
-            person_name = grist_person_row_to_person_name.get(person_row_id)
+            person_name = (
+                grist_person_row_to_person_name.get(person_row_id)
+                or grist_people_person_row_to_person_name.get(person_row_id)
+            )
             return True, True, person_name, dict(memberships)
 
         handle = normalize_telegram_handle(telegram_handle)

@@ -133,11 +133,6 @@ def normalize_telegram_handle(handle) -> str:
     return handle.strip().lstrip('@').lower()
 
 
-def is_fake_telegram_handle(handle: str) -> bool:
-    """Treat handles with a leading '$' as fake HR placeholders."""
-    return isinstance(handle, str) and handle.startswith('$')
-
-
 def registration_localpart_from_handle(handle: str) -> str:
     """Build Matrix localpart from Telegram handle, stripping the fake leading '$'."""
     normalized = normalize_telegram_handle(handle)
@@ -538,77 +533,6 @@ async def update_grist_people_matrix_id(handle: str, matrix_id: str) -> tuple[bo
     return True, None
 
 
-async def clear_fake_telegram_handle_in_grist(handle: str) -> tuple[bool, str | None]:
-    """Remove fake Telegram handle from Participations rows after successful registration."""
-    normalized = normalize_telegram_handle(handle)
-    if not normalized:
-        return False, "HANDLE_EMPTY"
-
-    try:
-        records = await fetch_grist_records_via_records_api()
-    except Exception as e:
-        logger.warning(f"Failed to fetch records for fake handle cleanup ({normalized}): {e}")
-        return False, "CLEANUP_FETCH_FAILED"
-
-    row_ids = []
-    for record in records:
-        fields = record.get("fields", {})
-        telegram2 = normalize_telegram_handle(fields.get("Telegram2"))
-        if telegram2 != normalized:
-            continue
-
-        record_id = fields.get("id")
-        if record_id is None:
-            record_id = record.get("id")
-        record_id = parse_grist_ref_id(record_id)
-        if record_id is not None:
-            row_ids.append(record_id)
-
-    if not row_ids:
-        return True, None
-
-    url = f"https://grist.insomniafest.ru/api/docs/{GRIST_DOC_ID}/tables/{GRIST_TABLE_ID}/records"
-    headers = {
-        "Authorization": f"Bearer {GRIST_API_KEY}",
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "records": [
-            {
-                "id": row_id,
-                "fields": {
-                    "Telegram2": "",
-                },
-            }
-            for row_id in row_ids
-        ]
-    }
-
-    try:
-        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
-            response = await request_with_retries(
-                client,
-                "PATCH",
-                url,
-                headers=headers,
-                json=payload,
-            )
-    except Exception as e:
-        logger.warning(f"Failed to cleanup fake Telegram handle {normalized}: {e}")
-        return False, "CLEANUP_EXCEPTION"
-
-    if response.status_code not in (200, 201):
-        logger.warning(
-            "Failed to cleanup fake Telegram handle %s: %s %s",
-            normalized,
-            response.status_code,
-            response.text,
-        )
-        return False, "CLEANUP_FAILED"
-
-    return True, None
-
-
 async def check_registration_eligibility(telegram_handle: str) -> tuple[bool, bool, str | None, dict[int, bool]]:
     """Return registration eligibility using People table and People.isInBL."""
     try:
@@ -655,6 +579,94 @@ async def check_registration_eligibility(telegram_handle: str) -> tuple[bool, bo
     except Exception as e:
         logger.error(f"Error checking registration eligibility for {telegram_handle}: {e}")
         return False, False, None, {}
+
+
+async def get_people_status_details(
+    telegram_handle: str,
+) -> tuple[bool, bool, int | None, str | None, bool | None]:
+    """Return whether a user exists in People plus row id and blacklist status."""
+    try:
+        if not telegram_handle:
+            logger.warning("Empty handle provided for People lookup")
+            return False, True, None, None, None
+
+        person_row_id = None
+        if is_matrix_id(telegram_handle):
+            matrix_id = normalize_matrix_id(telegram_handle)
+            if not matrix_id:
+                logger.warning("Invalid Matrix ID provided for People lookup: %s", telegram_handle)
+                return False, True, None, None, None
+
+            people_sync_ok = await sync_grist_people_matrix_cache(force_full=False)
+            if not people_sync_ok and not (
+                grist_matrix_id_to_person_row_id or grist_people_person_row_to_is_not_blacklisted
+            ):
+                logger.warning("Grist people cache unavailable and empty for matrix People lookup")
+                return False, False, None, None, None
+
+            person_row_id = grist_matrix_id_to_person_row_id.get(matrix_id)
+        else:
+            handle = normalize_telegram_handle(telegram_handle)
+            if not handle:
+                logger.warning("Invalid telegram handle provided for People lookup: %s", telegram_handle)
+                return False, True, None, None, None
+
+            people_sync_ok = await sync_grist_people_matrix_cache(force_full=False)
+            if not people_sync_ok and not (
+                grist_people_handle_to_person_row_id or grist_people_person_row_to_is_not_blacklisted
+            ):
+                logger.warning("Grist people cache unavailable and empty for telegram People lookup")
+                return False, False, None, None, None
+
+            person_row_id = grist_people_handle_to_person_row_id.get(handle)
+            if person_row_id is None:
+                sync_ok = await sync_grist_cache(force_full=False)
+                if sync_ok or grist_handle_to_person_row_id:
+                    person_row_id = grist_handle_to_person_row_id.get(handle)
+
+        if person_row_id is None:
+            return False, True, None, None, None
+
+        person_name = (
+            grist_people_person_row_to_person_name.get(person_row_id)
+            or grist_person_row_to_person_name.get(person_row_id)
+        )
+        is_not_blacklisted = grist_people_person_row_to_is_not_blacklisted.get(person_row_id)
+        return True, True, person_row_id, person_name, is_not_blacklisted
+    except Exception as e:
+        logger.error(f"Error checking People status for {telegram_handle}: {e}")
+        return False, False, None, None, None
+
+
+async def check_people_status(telegram_handle: str) -> tuple[bool, bool, str | None, bool | None]:
+    """Return whether a user exists in People plus blacklist status."""
+    found, check_ok, _, person_name, is_not_blacklisted = await get_people_status_details(telegram_handle)
+    return found, check_ok, person_name, is_not_blacklisted
+
+
+def describe_people_status(people_found: bool, people_check_ok: bool) -> str:
+    """Format People lookup status for HR diagnostics."""
+    if not people_check_ok:
+        return "не удалось проверить"
+    return "найден" if people_found else "не найден"
+
+
+def describe_participation_status(participation_found: bool, participation_check_ok: bool) -> str:
+    """Format Participations lookup status for HR diagnostics."""
+    if not participation_check_ok:
+        return "не удалось проверить"
+    return "найден" if participation_found else "не найден"
+
+
+def describe_blacklist_status(people_found: bool, is_not_blacklisted: bool | None) -> str:
+    """Format blacklist status for HR diagnostics."""
+    if not people_found:
+        return "-"
+    if is_not_blacklisted is True:
+        return "нет"
+    if is_not_blacklisted is False:
+        return "да"
+    return "не удалось определить"
 
 
 async def check_synapse_admin_token() -> tuple[bool, str | None]:
@@ -773,7 +785,6 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     original_handle = normalize_telegram_handle(update.effective_user.username) or str(user_id)
     username = registration_localpart_from_handle(original_handle) or str(user_id)
-    fake_tg_handle = is_fake_telegram_handle(original_handle)
     
     # Rate limiting check
     now = time.time()
@@ -855,19 +866,6 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                         f"people_update_error={people_update_error}"
                     ),
                 )
-
-            if fake_tg_handle:
-                cleanup_ok, cleanup_error = await clear_fake_telegram_handle_in_grist(original_handle)
-                if not cleanup_ok:
-                    await notify_owner(
-                        context,
-                        (
-                            "⚠️ Не удалось очистить фейковый Telegram handle в Гристе\n"
-                            f"username={username}\n"
-                            f"fake_handle={original_handle}\n"
-                            f"cleanup_error={cleanup_error}"
-                        ),
-                    )
 
             room_aliases = list(AUTO_JOIN_ROOMS)
             if is_organizer:
@@ -1114,8 +1112,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     message = (
         "📖 Помощь и документация\n\n"
         f"Вкратце о Бессонном Чате: {HELP_URL}\n\n"
-        "/register - создать аккаунт в Matrix.\n"
-        "/my_teams - добавиться в командные комнаты.\n"
+        "/register - создаст аккаунт в Чате и автоматически добавит вас в нужные комнаты.\n"
+        "/join_teams - добавит вас в командные комнаты (эта нужно тем, кто только что был добавлен в команду).\n"
         "/reset_password - сбросить пароль существующего аккаунта.\n\n"
         "Если возникнут вопросы или проблемы, обратитесь к своему HR или напишите в Общий Чат https://chat.insomniafest.ru/#/room/#general:insomniafest.ru."
     )
@@ -1124,16 +1122,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         message += (
             "\n\n"
             "🔐 Команды HR\n\n"
-            "(/hr_register проверяет таблицу People и поле isInBL=\"Нет\"; команды по командам используют Участия 2026)\n\n"
-            "Как это работает:\n"
-            "- /hr_check и /hr_sync_teams принимают @телеграм_ник или Matrix ID вида @username:insomniafest.ru.\n"
-            "- Если в Гристе для регистрации используется временный telegram-ник с '$' в начале (например, $ivan), "
-            "то при /hr_register этот '$' убирается из Matrix-логина.\n"
-            "- После успешной регистрации временный telegram-ник очищается в Гристе автоматически.\n\n"
-            "/hr_sync - принудительно обновить кэш Грист и показать счетчики (полезно сделать если человек был только что добавлен в Участия 2026).\n"
-            "/hr_check @телеграм_ник | @username:insomniafest.ru - проверить есть ли человек в Участиях 2026 и членство в командах.\n"
-            "/hr_register @телеграм_ник - выполнить полную регистрацию: человек должен быть в таблице People и не быть в черном списке.\n"
-            "/hr_sync_teams @телеграм_ник | @username:insomniafest.ru - перепроверить команды участника и добавить в командные комнаты (создаст комнаты при необходимости)."
+            "Бот зарегистрирует пользователя в Чате если он есть в таблице Человеки в Гристе (если он не в ЧС). "
+            "Добавление в комнаты команд происходит автоматически при регистрации на основе данных из таблицы Участия 2026.\n\n"
+            "Для регистрации человека, которого нет в телеге, нужно вписать в таблицу Человеки его желаемое имя пользователя в Чате в столбец Телеграм вот так: $user_name (вначале должен быть знак $). После этого нужно сделать /hr_sync, а потом /hr_register $user_name. Аккаунт в чате будет создан с логином @user_name:insomniafest.ru ($ вначале не будет). Удалите `$user_name` из Гриста после регистрации.\n\n"
+            "/hr_sync - принудительно обновить кэш Грист (полезно сделать если человек был только что добавлен в Участия 2026).\n"
+            "/hr_check @телеграм_ник | @username:insomniafest.ru - проверить, есть ли человек в Человеках и Участиях 2026, зарегистрирован ли он уже, и так далее.\n"
+            "/hr_register @телеграм_ник | $фейковый_ник - выполнить полную регистрацию: человек должен быть в таблице People и не быть в черном списке.\n"
+            "/hr_join_teams @телеграм_ник | @username:insomniafest.ru - добавить в командные комнаты (создаст комнаты при необходимости)."
         )
 
     await update.message.reply_text(message)
@@ -1230,7 +1225,7 @@ def build_team_sync_message(
     return "".join(message_parts)
 
 
-async def my_teams(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def join_teams(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Check caller participation and ensure membership in all team chats."""
     user_id = update.effective_user.id
     username = normalize_telegram_handle(update.effective_user.username) or str(user_id)
@@ -1254,7 +1249,7 @@ async def my_teams(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if error_code and error_code.startswith("NOT_REGISTERED:"):
         await update.message.reply_text(
             "ℹ️ Ваш аккаунт в чате пока не зарегистрирован. Сначала используйте /register, "
-            "после этого можно снова вызвать /my_teams."
+            "после этого можно снова вызвать /join_teams."
         )
         return
 
@@ -1346,9 +1341,7 @@ async def ops_sync(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.effective_message.reply_text(
         (
             "✅ Кэш Гриста обновлен\n"
-            f"пользователей={len(grist_handle_to_record_id)}\n"
-            f"команд={len(grist_team_id_to_name)}\n"
-            f"макс_id_записи={grist_max_record_id}"
+            f"✅ Людей в Участиях 2026: {len(grist_handle_to_record_id)}"
         )
     )
 
@@ -1396,10 +1389,8 @@ async def ops_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     handle = context.args[0]
-    result = await _hr_require_eligible(update, handle)
-    if result is None:
-        return
-    person_name, memberships = result
+    people_found, people_check_ok, person_row_id, people_name, is_not_blacklisted = await get_people_status_details(handle)
+    participation_found, participation_check_ok, participation_name, memberships = await check_user_eligibility(handle)
 
     is_matrix_lookup = is_matrix_id(handle)
     normalized_handle = matrix_localpart_from_id(handle) if is_matrix_lookup else normalize_telegram_handle(handle)
@@ -1410,15 +1401,23 @@ async def ops_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "unknown": "не удалось определить",
     }.get(registration_status, "не удалось определить")
     organizer_room_status = "да" if any(memberships.values()) else "нет"
+    person_name = people_name or participation_name
+    people_status = describe_people_status(people_found, people_check_ok)
+    participation_status = describe_participation_status(participation_found, participation_check_ok)
+    blacklist_status = describe_blacklist_status(people_found, is_not_blacklisted)
 
     lines = [
-        "✅ Участник найден в списке Участий 2026",
+        "✅ Отчет по участнику",
         (
             f"Matrix ID: {normalize_matrix_id(handle)}"
             if is_matrix_lookup
             else f"Telegram: @{normalized_handle}"
         ),
         f"Имя: {person_name or '-'}",
+        f"person_row_id: {person_row_id if person_row_id is not None else '-'}",
+        f"People: {people_status}",
+        f"Черный список: {blacklist_status}",
+        f"Участия 2026: {participation_status}",
         f"Регистрация в Matrix: {registration_status_ru}",
         f"Комната организаторов: {organizer_room_status}",
     ]
@@ -1427,6 +1426,8 @@ async def ops_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             lines.append(
                 f"Команда #{team_id}: {get_team_name(team_id)}; роль: {'организатор' if is_org else 'участник'}"
             )
+    elif not participation_check_ok:
+        lines.append("Команды: не удалось определить")
     else:
         lines.append("Команды: не указаны")
 
@@ -1443,14 +1444,41 @@ async def ops_register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     handle = context.args[0]
-    result = await _hr_require_registration_eligible(update, handle)
-    if result is None:
+    people_found, people_check_ok, person_row_id, people_name, is_not_blacklisted = await get_people_status_details(handle)
+    participation_found, participation_check_ok, participation_name, memberships = await check_user_eligibility(handle)
+    person_name = people_name or participation_name
+
+    people_status = describe_people_status(people_found, people_check_ok)
+    participation_status = describe_participation_status(participation_found, participation_check_ok)
+    blacklist_status = describe_blacklist_status(people_found, is_not_blacklisted)
+
+    precheck_lines = [
+        f"people={people_status}",
+        f"person_row_id={person_row_id if person_row_id is not None else '-'}",
+        f"черный_список={blacklist_status}",
+        f"участия_2026={participation_status}",
+    ]
+
+    if not people_check_ok:
+        await update.effective_message.reply_text(
+            "\n".join([
+                "❌ Не удалось проверить данные участника",
+                *precheck_lines,
+            ])
+        )
         return
-    person_name, memberships = result
+
+    if not people_found or is_not_blacklisted is not True:
+        await update.effective_message.reply_text(
+            "\n".join([
+                "❌ Человек не найден в таблице People или находится в черном списке",
+                *precheck_lines,
+            ])
+        )
+        return
 
     original_handle = normalize_telegram_handle(handle)
     username = registration_localpart_from_handle(original_handle)
-    fake_tg_handle = is_fake_telegram_handle(original_handle)
     temp_password = secrets.token_urlsafe(12)
     is_organizer = any(memberships.values())
 
@@ -1480,15 +1508,6 @@ async def ops_register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if person_name:
         displayname_ok = await set_synapse_display_name(username, person_name)
 
-    if fake_tg_handle:
-        cleanup_ok, cleanup_error = await clear_fake_telegram_handle_in_grist(original_handle)
-        if not cleanup_ok:
-            lines = [
-                "⚠️ Регистрация завершена, но не удалось очистить фейковый Telegram в Гристе.",
-                f"ошибка={cleanup_error}",
-            ]
-            await update.effective_message.reply_text("\n".join(lines))
-
     room_aliases = list(AUTO_JOIN_ROOMS)
     if is_organizer:
         room_aliases.append(ORGS_ROOM)
@@ -1504,6 +1523,7 @@ async def ops_register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         f"пользователь={username}",
         f"mxid={to_mxid(username)}",
         f"имя={person_name or '-'}",
+        *precheck_lines,
         f"создан={str(created).lower()}",
         f"реактивирован={str(reactivated).lower()}",
         f"отображаемое_имя_обновлено={str(displayname_ok).lower()}",
@@ -1526,13 +1546,13 @@ async def ops_register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.effective_message.reply_text("\n".join(lines))
 
 
-async def ops_sync_teams(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def ops_join_teams(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Sync team room membership for a provided Telegram handle. Hidden HR-only command."""
     if not await require_hr(update):
         return
 
     if not context.args:
-        await update.effective_message.reply_text("Использование: /hr_sync_teams <телеграм_ник>")
+        await update.effective_message.reply_text("Использование: /hr_join_teams <телеграм_ник>")
         return
 
     handle = context.args[0]
@@ -2225,13 +2245,13 @@ def main() -> None:
     # Add command handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("register", register))
-    application.add_handler(CommandHandler("my_teams", my_teams))
+    application.add_handler(CommandHandler("join_teams", join_teams))
     application.add_handler(CommandHandler("reset_password", reset_password))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("hr_sync", ops_sync))
     application.add_handler(CommandHandler("hr_check", ops_check))
     application.add_handler(CommandHandler("hr_register", ops_register))
-    application.add_handler(CommandHandler("hr_sync_teams", ops_sync_teams))
+    application.add_handler(CommandHandler("hr_join_teams", ops_join_teams))
     application.add_error_handler(error_handler)
 
     # Run the bot

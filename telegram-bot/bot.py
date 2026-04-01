@@ -10,10 +10,10 @@ import hashlib
 import secrets
 import time
 from urllib.parse import quote
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.error import NetworkError
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler
 
 # Configure logging
 logging.basicConfig(
@@ -67,6 +67,7 @@ REGISTRATION_RATE_LIMIT = 300  # 5 minutes in seconds
 user_registration_times = {}
 PASSWORD_RESET_CONFIRM_TIMEOUT = 600  # 10 minutes in seconds
 password_reset_confirmations = {}
+PASSWORD_RESET_CONFIRM_CALLBACK = "reset_password:confirm"
 
 # HTTP settings for external APIs
 HTTP_TIMEOUT = httpx.Timeout(timeout=15.0, connect=5.0)
@@ -994,11 +995,15 @@ async def reset_password(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     if not is_confirmed:
         password_reset_confirmations[user_id] = now
+        keyboard = InlineKeyboardMarkup(
+            [[InlineKeyboardButton("✅ Подтвердить сброс пароля", callback_data=PASSWORD_RESET_CONFIRM_CALLBACK)]]
+        )
         await update.message.reply_text(
             "⚠️ Внимание: сброс пароля приведет к выходу из аккаунта на всех устройствах.\n\n"
             "Если у вас нет ключа восстановления (Recovery Key), вы потеряете доступ "
             "ко всем зашифрованным сообщениям (в том числе в личных чатах).\n\n"
-            "Если вы уверены, отправьте команду: /reset_password confirm"
+            "Если вы уверены, нажмите кнопку ниже или отправьте команду: /reset_password confirm",
+            reply_markup=keyboard,
         )
         return
 
@@ -1086,6 +1091,45 @@ async def reset_password(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             f"⚠️ Ошибка сброса пароля\nuser_id={user_id}\nusername={username}\nerror={e}",
         )
         await update.message.reply_text("❌ Произошла ошибка при сбросе пароля. Администраторы получили сообщение об этом и постараются как можно скорее всё починить")
+
+
+async def reset_password_confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle inline confirmation for password reset."""
+    query = update.callback_query
+    if query is None:
+        return
+
+    await query.answer()
+
+    user = update.effective_user
+    if user is None:
+        await query.message.reply_text("❌ Не удалось определить пользователя. Попробуйте /reset_password еще раз.")
+        return
+
+    user_id = user.id
+    username = normalize_telegram_handle(user.username) or str(user_id)
+    now = time.time()
+
+    prune_registration_times(now)
+    prune_password_reset_confirmations(now)
+
+    confirmation_ts = password_reset_confirmations.get(user_id)
+    if confirmation_ts is None:
+        await query.message.reply_text(
+            "ℹ️ Сначала подтвердите действие: отправьте /reset_password, затем нажмите кнопку подтверждения."
+        )
+        return
+
+    password_reset_confirmations.pop(user_id, None)
+
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception:
+        # Message can be old or already edited; it is safe to continue the flow.
+        pass
+
+    context.args = ["confirm"]
+    await reset_password(update, context)
 
 
 def format_exception_chain(error: BaseException, max_depth: int = 4) -> str:
@@ -2287,6 +2331,7 @@ def main() -> None:
     application.add_handler(CommandHandler("join_teams", join_teams))
     application.add_handler(CommandHandler("reset_password", reset_password))
     application.add_handler(CommandHandler("password_reset", reset_password))
+    application.add_handler(CallbackQueryHandler(reset_password_confirm_callback, pattern=f"^{PASSWORD_RESET_CONFIRM_CALLBACK}$"))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("hr_sync", ops_sync))
     application.add_handler(CommandHandler("hr_check", ops_check))

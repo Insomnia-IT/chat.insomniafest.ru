@@ -23,8 +23,8 @@ class DummyMessage:
     def __init__(self):
         self.sent = []
 
-    async def reply_text(self, text, parse_mode=None):
-        self.sent.append({"text": text, "parse_mode": parse_mode})
+    async def reply_text(self, text, parse_mode=None, reply_markup=None):
+        self.sent.append({"text": text, "parse_mode": parse_mode, "reply_markup": reply_markup})
 
 
 class DummyUser:

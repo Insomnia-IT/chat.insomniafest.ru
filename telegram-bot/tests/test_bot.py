@@ -1399,12 +1399,14 @@ def test_help_command_hr_mentions_hr_join_teams(monkeypatch):
 def test_reset_password_rate_limited(monkeypatch):
     bot = load_bot_module(monkeypatch)
     update = DummyUpdate(user_id=42, username="alice")
-    context = DummyContext()
+    context = DummyContext(args=["confirm"])
 
     now = 1_000_000.0
     monkeypatch.setattr(bot.time, "time", lambda: now)
 
     bot.user_registration_times.clear()
+    bot.password_reset_confirmations.clear()
+    bot.password_reset_confirmations[42] = now
     bot.user_registration_times[42] = now - 10
 
     asyncio.run(bot.reset_password(update, context))
@@ -1413,12 +1415,30 @@ def test_reset_password_rate_limited(monkeypatch):
     assert "Подождите" in update.message.sent[0]["text"]
 
 
+def test_reset_password_requires_confirmation(monkeypatch):
+    bot = load_bot_module(monkeypatch)
+    update = DummyUpdate(user_id=42, username="alice")
+    context = DummyContext()
+
+    bot.password_reset_confirmations.clear()
+
+    asyncio.run(bot.reset_password(update, context))
+
+    assert len(update.message.sent) == 1
+    assert "выходу из аккаунта на всех устройствах" in update.message.sent[0]["text"]
+    assert "/reset_password confirm" in update.message.sent[0]["text"]
+    assert 42 in bot.password_reset_confirmations
+
+
 def test_reset_password_success(monkeypatch):
     bot = load_bot_module(monkeypatch)
     update = DummyUpdate(user_id=42, username="CaseMix_123")
-    context = DummyContext()
+    context = DummyContext(args=["confirm"])
 
     bot.user_registration_times.clear()
+    bot.password_reset_confirmations.clear()
+    bot.password_reset_confirmations[42] = 1_000_000.0
+    monkeypatch.setattr(bot.time, "time", lambda: 1_000_000.0)
     captured = {}
 
     async def fake_check_registration_eligibility(username):
@@ -2393,9 +2413,12 @@ def test_post_init_notifies_owner_on_startup(monkeypatch):
 def test_reset_password_eligibility_check_failed(monkeypatch):
     bot = load_bot_module(monkeypatch)
     update = DummyUpdate(user_id=42, username="alice")
-    context = DummyContext()
+    context = DummyContext(args=["confirm"])
 
     bot.user_registration_times.clear()
+    bot.password_reset_confirmations.clear()
+    bot.password_reset_confirmations[42] = 1_000_000.0
+    monkeypatch.setattr(bot.time, "time", lambda: 1_000_000.0)
 
     async def fake_check_registration_eligibility(username):
         return False, False, None, {}
@@ -2411,9 +2434,12 @@ def test_reset_password_eligibility_check_failed(monkeypatch):
 def test_reset_password_not_eligible(monkeypatch):
     bot = load_bot_module(monkeypatch)
     update = DummyUpdate(user_id=42, username="alice")
-    context = DummyContext()
+    context = DummyContext(args=["confirm"])
 
     bot.user_registration_times.clear()
+    bot.password_reset_confirmations.clear()
+    bot.password_reset_confirmations[42] = 1_000_000.0
+    monkeypatch.setattr(bot.time, "time", lambda: 1_000_000.0)
 
     async def fake_check_registration_eligibility(username):
         return False, True, None, {}
@@ -2429,9 +2455,12 @@ def test_reset_password_not_eligible(monkeypatch):
 def test_reset_password_token_missing(monkeypatch):
     bot = load_bot_module(monkeypatch)
     update = DummyUpdate(user_id=42, username="alice")
-    context = DummyContext()
+    context = DummyContext(args=["confirm"])
 
     bot.user_registration_times.clear()
+    bot.password_reset_confirmations.clear()
+    bot.password_reset_confirmations[42] = 1_000_000.0
+    monkeypatch.setattr(bot.time, "time", lambda: 1_000_000.0)
 
     async def fake_check_registration_eligibility(username):
         return True, True, "Alice", {72: False}
@@ -2450,9 +2479,12 @@ def test_reset_password_token_missing(monkeypatch):
 def test_reset_password_failure_notifies_owner(monkeypatch):
     bot = load_bot_module(monkeypatch)
     update = DummyUpdate(user_id=42, username="alice")
-    context = DummyContext()
+    context = DummyContext(args=["confirm"])
 
     bot.user_registration_times.clear()
+    bot.password_reset_confirmations.clear()
+    bot.password_reset_confirmations[42] = 1_000_000.0
+    monkeypatch.setattr(bot.time, "time", lambda: 1_000_000.0)
     notified = []
 
     async def fake_check_registration_eligibility(username):

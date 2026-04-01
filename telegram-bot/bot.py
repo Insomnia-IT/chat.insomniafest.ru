@@ -65,6 +65,8 @@ if OWNER_TELEGRAM_ID is not None:
 # Rate limiting: track last registration attempt per user (user_id -> timestamp)
 REGISTRATION_RATE_LIMIT = 300  # 5 minutes in seconds
 user_registration_times = {}
+PASSWORD_RESET_CONFIRM_TIMEOUT = 600  # 10 minutes in seconds
+password_reset_confirmations = {}
 
 # HTTP settings for external APIs
 HTTP_TIMEOUT = httpx.Timeout(timeout=15.0, connect=5.0)
@@ -96,6 +98,14 @@ def prune_registration_times(now: float) -> None:
     stale_user_ids = [uid for uid, ts in user_registration_times.items() if ts < cutoff]
     for uid in stale_user_ids:
         user_registration_times.pop(uid, None)
+
+
+def prune_password_reset_confirmations(now: float) -> None:
+    """Drop stale password reset confirmations."""
+    cutoff = now - PASSWORD_RESET_CONFIRM_TIMEOUT
+    stale_user_ids = [uid for uid, ts in password_reset_confirmations.items() if ts < cutoff]
+    for uid in stale_user_ids:
+        password_reset_confirmations.pop(uid, None)
 
 
 async def request_with_retries(
@@ -978,6 +988,29 @@ async def reset_password(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     now = time.time()
     prune_registration_times(now)
+    prune_password_reset_confirmations(now)
+
+    is_confirmed = bool(context.args) and context.args[0].strip().lower() == "confirm"
+
+    if not is_confirmed:
+        password_reset_confirmations[user_id] = now
+        await update.message.reply_text(
+            "⚠️ Внимание: сброс пароля приведет к выходу из аккаунта на всех устройствах.\n\n"
+            "Если у вас нет ключа восстановления (Recovery Key), вы потеряете доступ "
+            "ко всем зашифрованным сообщениям (в том числе в личных чатах).\n\n"
+            "Если вы уверены, отправьте команду: /reset_password confirm"
+        )
+        return
+
+    confirmation_ts = password_reset_confirmations.get(user_id)
+    if confirmation_ts is None:
+        await update.message.reply_text(
+            "ℹ️ Сначала подтвердите действие: отправьте /reset_password, затем /reset_password confirm"
+        )
+        return
+
+    password_reset_confirmations.pop(user_id, None)
+
     if user_id in user_registration_times:
         time_since_last_attempt = now - user_registration_times[user_id]
         if time_since_last_attempt < REGISTRATION_RATE_LIMIT:
@@ -2253,6 +2286,7 @@ def main() -> None:
     application.add_handler(CommandHandler("register", register))
     application.add_handler(CommandHandler("join_teams", join_teams))
     application.add_handler(CommandHandler("reset_password", reset_password))
+    application.add_handler(CommandHandler("password_reset", reset_password))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("hr_sync", ops_sync))
     application.add_handler(CommandHandler("hr_check", ops_check))

@@ -1604,32 +1604,62 @@ async def ops_register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         memberships,
     )
 
+    safe_username = html.escape(username)
+    safe_mxid = html.escape(to_mxid(username))
+    safe_person_name = html.escape(person_name or "-")
+    safe_password = html.escape(temp_password)
+
     lines = [
-        "🧪 Полная регистрация через HR",
-        f"пользователь={username}",
-        f"mxid={to_mxid(username)}",
-        f"имя={person_name or '-'}",
-        *precheck_lines,
-        f"создан={str(created).lower()}",
-        f"реактивирован={str(reactivated).lower()}",
-        f"отображаемое_имя_обновлено={str(displayname_ok).lower()}",
-        f"добавление_в_базовые_комнаты={str(join_ok).lower()}",
-        f"добавление_в_командные_комнаты={str(team_join_ok).lower()}",
+        "🧪 <b>Полная регистрация через HR</b>",
+        "",
+        "<b>Профиль</b>",
+        f"• Telegram username: <code>{safe_username}</code>",
+        f"• Matrix MXID: <code>{safe_mxid}</code>",
+        f"• Имя: {safe_person_name}",
+        "",
+        "<b>Проверки</b>",
+        f"• People: {people_status}",
+        f"• Person Row ID: {person_row_id if person_row_id is not None else '-'}",
+        f"• Черный список: {blacklist_status}",
+        f"• Участия 2026: {participation_status}",
+        "",
+        "<b>Результат</b>",
+        f"• Аккаунт создан: {'да' if created else 'нет'}",
+        f"• Аккаунт реактивирован: {'да' if reactivated else 'нет'}",
+        f"• Display Name обновлен: {'да' if displayname_ok else 'нет'}",
+        f"• Добавление в базовые комнаты: {'да' if join_ok else 'нет'}",
+        f"• Добавление в командные комнаты: {'да' if team_join_ok else 'нет'}",
     ]
 
     if created:
-        lines.append(f"временный_пароль={temp_password}")
+        user_message = "\n".join([
+            "Привет! Твой аккаунт в Бессонном Чате создан:",
+            f"Логин: {username}",
+            f"Временный пароль: {temp_password}",
+            f"Вход: {ELEMENT_URL}",
+            "После входа сразу поменяй пароль.",
+            f"Инструкция: {HELP_URL}",
+        ])
+        lines.extend([
+            "",
+            "<b>Данные для копирования</b>",
+            f"• Username: <code>{safe_username}</code>",
+            f"• Временный пароль: <code>{safe_password}</code>",
+            "",
+            "📨 <b>Сообщение для пользователя (скопируйте и отправьте):</b>",
+            f"<pre>{html.escape(user_message)}</pre>",
+        ])
 
     if failed_rooms:
-        lines.append(f"не_добавлен_в_комнаты={', '.join(failed_rooms)}")
+        lines.append(f"• Не добавлен в базовые комнаты: {', '.join(map(html.escape, failed_rooms))}")
 
     if failed_team_rooms:
-        lines.append(f"не_добавлен_в_командные_комнаты={', '.join(failed_team_rooms)}")
+        lines.append(f"• Не добавлен в командные комнаты: {', '.join(map(html.escape, failed_team_rooms))}")
 
     if failed_moderation_rooms:
-        lines.append(f"не_выданы_права_администратора={', '.join(failed_moderation_rooms)}")
+        lines.append(f"• Не выданы права администратора: {', '.join(map(html.escape, failed_moderation_rooms))}")
 
-    await update.effective_message.reply_text("\n".join(lines))
+    await update.effective_message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
 
 
 async def ops_join_teams(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

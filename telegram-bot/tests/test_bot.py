@@ -636,17 +636,25 @@ def test_ops_register_reports_full_flow_results(monkeypatch):
 
     assert update.message.sent
     text = update.message.sent[0]["text"]
+    assert update.message.sent[0]["parse_mode"] == bot.ParseMode.HTML
     assert "Полная регистрация через HR" in text
-    assert "mxid=@test_member:insomniafest.ru" in text
-    assert "people=найден" in text
-    assert "person_row_id=21" in text
-    assert "черный_список=нет" in text
-    assert "участия_2026=найден" in text
-    assert "создан=true" in text
-    assert "добавление_в_базовые_комнаты=true" in text
-    assert "добавление_в_командные_комнаты=false" in text
-    assert "не_добавлен_в_командные_комнаты=GR" in text
-    assert "не_выданы_права_администратора=GR" in text
+    assert "Telegram username: <code>test_member</code>" in text
+    assert "Matrix MXID: <code>@test_member:insomniafest.ru</code>" in text
+    assert "People: найден" in text
+    assert "Person Row ID: 21" in text
+    assert "Черный список: нет" in text
+    assert "Участия 2026: найден" in text
+    assert "Аккаунт создан: да" in text
+    assert "Добавление в базовые комнаты: да" in text
+    assert "Добавление в командные комнаты: нет" in text
+    assert "Сообщение для пользователя" in text
+    assert "<pre>Привет! Твой аккаунт в Бессонном Чате создан:" in text
+    assert "Логин: test_member" in text
+    assert "Временный пароль:" in text
+    assert "Вход: https://chat.insomniafest.ru" in text
+    assert "Инструкция: https://chat.insomniafest.ru/help" in text
+    assert "Не добавлен в командные комнаты: GR" in text
+    assert "Не выданы права администратора: GR" in text
 
 
 def test_ops_join_teams_reports_success(monkeypatch):
@@ -2841,11 +2849,11 @@ def test_ops_register_account_active_path_reports_existing(monkeypatch):
     asyncio.run(bot.ops_register(update, context))
 
     text = update.message.sent[-1]["text"]
-    assert "person_row_id=21" in text
-    assert "создан=false" in text
-    assert "реактивирован=false" in text
+    assert "Person Row ID: 21" in text
+    assert "Аккаунт создан: нет" in text
+    assert "Аккаунт реактивирован: нет" in text
     assert "временный_пароль=" not in text
-    assert "добавление_в_командные_комнаты=true" in text
+    assert "Добавление в командные комнаты: да" in text
 
 def test_ops_register_reactivation_token_missing_path_reports_existing(monkeypatch):
     bot = load_bot_module(monkeypatch)
@@ -2884,10 +2892,10 @@ def test_ops_register_reactivation_token_missing_path_reports_existing(monkeypat
     asyncio.run(bot.ops_register(update, context))
 
     text = update.message.sent[-1]["text"]
-    assert "имя=-" in text
-    assert "person_row_id=21" in text
-    assert "создан=false" in text
-    assert "реактивирован=false" in text
+    assert "Имя: -" in text
+    assert "Person Row ID: 21" in text
+    assert "Аккаунт создан: нет" in text
+    assert "Аккаунт реактивирован: нет" in text
     assert "временный_пароль=" not in text
 
 

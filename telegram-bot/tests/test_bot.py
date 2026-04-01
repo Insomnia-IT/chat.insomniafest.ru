@@ -47,6 +47,29 @@ class DummyUpdate:
         self.effective_chat = DummyChat(chat_id=chat_id)
 
 
+class DummyCallbackQuery:
+    def __init__(self, message=None):
+        self.message = message if message is not None else DummyMessage()
+        self.last_reply_markup = "__not_set__"
+        self.answers = []
+
+    async def answer(self, text=None, show_alert=False):
+        self.answers.append({"text": text, "show_alert": show_alert})
+
+    async def edit_message_reply_markup(self, reply_markup=None):
+        self.last_reply_markup = reply_markup
+
+
+class DummyCallbackUpdate:
+    def __init__(self, user_id=1, username="alice", chat_id=1, message=None):
+        self.effective_user = DummyUser(user_id=user_id, username=username)
+        self.effective_chat = DummyChat(chat_id=chat_id)
+        self.callback_query = DummyCallbackQuery(message=message)
+        self.message = None
+        self.edited_message = None
+        self.effective_message = None
+
+
 class DummyBot:
     def __init__(self):
         self.sent = []
@@ -1398,8 +1421,9 @@ def test_help_command_hr_mentions_hr_join_teams(monkeypatch):
 
 def test_reset_password_rate_limited(monkeypatch):
     bot = load_bot_module(monkeypatch)
-    update = DummyUpdate(user_id=42, username="alice")
-    context = DummyContext(args=["confirm"])
+    base_update = DummyUpdate(user_id=42, username="alice")
+    update = DummyCallbackUpdate(user_id=42, username="alice", message=base_update.message)
+    context = DummyContext()
 
     now = 1_000_000.0
     monkeypatch.setattr(bot.time, "time", lambda: now)
@@ -1409,10 +1433,10 @@ def test_reset_password_rate_limited(monkeypatch):
     bot.password_reset_confirmations[42] = now
     bot.user_registration_times[42] = now - 10
 
-    asyncio.run(bot.reset_password(update, context))
+    asyncio.run(bot.reset_password_confirm_callback(update, context))
 
-    assert len(update.message.sent) == 1
-    assert "Подождите" in update.message.sent[0]["text"]
+    assert len(base_update.message.sent) == 1
+    assert "Подождите" in base_update.message.sent[0]["text"]
 
 
 def test_reset_password_requires_confirmation(monkeypatch):
@@ -1426,14 +1450,16 @@ def test_reset_password_requires_confirmation(monkeypatch):
 
     assert len(update.message.sent) == 1
     assert "выходу из аккаунта на всех устройствах" in update.message.sent[0]["text"]
-    assert "/reset_password confirm" in update.message.sent[0]["text"]
+    assert "нажмите кнопку ниже" in update.message.sent[0]["text"]
+    assert update.message.sent[0]["reply_markup"] is not None
     assert 42 in bot.password_reset_confirmations
 
 
 def test_reset_password_success(monkeypatch):
     bot = load_bot_module(monkeypatch)
-    update = DummyUpdate(user_id=42, username="CaseMix_123")
-    context = DummyContext(args=["confirm"])
+    base_update = DummyUpdate(user_id=42, username="CaseMix_123")
+    update = DummyCallbackUpdate(user_id=42, username="CaseMix_123", message=base_update.message)
+    context = DummyContext()
 
     bot.user_registration_times.clear()
     bot.password_reset_confirmations.clear()
@@ -1453,15 +1479,15 @@ def test_reset_password_success(monkeypatch):
     monkeypatch.setattr(bot, "check_registration_eligibility", fake_check_registration_eligibility)
     monkeypatch.setattr(bot, "reset_synapse_password", fake_reset_synapse_password)
 
-    asyncio.run(bot.reset_password(update, context))
+    asyncio.run(bot.reset_password_confirm_callback(update, context))
 
     assert captured == {
         "eligibility": "casemix_123",
         "reset": "casemix_123",
         "password": captured["password"],
     }
-    assert len(update.message.sent) == 2
-    text = update.message.sent[1]["text"]
+    assert len(base_update.message.sent) == 2
+    text = base_update.message.sent[1]["text"]
     assert "Пароль сброшен" in text
     assert "<b>Имя пользователя:</b>" in text
     assert "<code>casemix_123</code>" in text
@@ -1469,7 +1495,7 @@ def test_reset_password_success(monkeypatch):
     assert f"<code>{captured['password']}</code>" in text
     assert "<a href=\"https://chat.insomniafest.ru\">https://chat.insomniafest.ru</a>" in text
     assert "<a href=\"https://chat.insomniafest.ru/help\">https://chat.insomniafest.ru/help</a>" in text
-    assert update.message.sent[1]["parse_mode"] == bot.ParseMode.HTML
+    assert base_update.message.sent[1]["parse_mode"] == bot.ParseMode.HTML
 
 
 def test_help_command_admin_includes_owner_commands(monkeypatch):
@@ -2412,8 +2438,9 @@ def test_post_init_notifies_owner_on_startup(monkeypatch):
 
 def test_reset_password_eligibility_check_failed(monkeypatch):
     bot = load_bot_module(monkeypatch)
-    update = DummyUpdate(user_id=42, username="alice")
-    context = DummyContext(args=["confirm"])
+    base_update = DummyUpdate(user_id=42, username="alice")
+    update = DummyCallbackUpdate(user_id=42, username="alice", message=base_update.message)
+    context = DummyContext()
 
     bot.user_registration_times.clear()
     bot.password_reset_confirmations.clear()
@@ -2425,16 +2452,17 @@ def test_reset_password_eligibility_check_failed(monkeypatch):
 
     monkeypatch.setattr(bot, "check_registration_eligibility", fake_check_registration_eligibility)
 
-    asyncio.run(bot.reset_password(update, context))
+    asyncio.run(bot.reset_password_confirm_callback(update, context))
 
-    assert len(update.message.sent) == 2
-    assert "Не удалось проверить данные" in update.message.sent[1]["text"]
+    assert len(base_update.message.sent) == 2
+    assert "Не удалось проверить данные" in base_update.message.sent[1]["text"]
 
 
 def test_reset_password_not_eligible(monkeypatch):
     bot = load_bot_module(monkeypatch)
-    update = DummyUpdate(user_id=42, username="alice")
-    context = DummyContext(args=["confirm"])
+    base_update = DummyUpdate(user_id=42, username="alice")
+    update = DummyCallbackUpdate(user_id=42, username="alice", message=base_update.message)
+    context = DummyContext()
 
     bot.user_registration_times.clear()
     bot.password_reset_confirmations.clear()
@@ -2446,16 +2474,17 @@ def test_reset_password_not_eligible(monkeypatch):
 
     monkeypatch.setattr(bot, "check_registration_eligibility", fake_check_registration_eligibility)
 
-    asyncio.run(bot.reset_password(update, context))
+    asyncio.run(bot.reset_password_confirm_callback(update, context))
 
-    assert len(update.message.sent) == 2
-    assert "не найден в таблице people" in update.message.sent[1]["text"].lower()
+    assert len(base_update.message.sent) == 2
+    assert "не найден в таблице people" in base_update.message.sent[1]["text"].lower()
 
 
 def test_reset_password_token_missing(monkeypatch):
     bot = load_bot_module(monkeypatch)
-    update = DummyUpdate(user_id=42, username="alice")
-    context = DummyContext(args=["confirm"])
+    base_update = DummyUpdate(user_id=42, username="alice")
+    update = DummyCallbackUpdate(user_id=42, username="alice", message=base_update.message)
+    context = DummyContext()
 
     bot.user_registration_times.clear()
     bot.password_reset_confirmations.clear()
@@ -2471,15 +2500,16 @@ def test_reset_password_token_missing(monkeypatch):
     monkeypatch.setattr(bot, "check_registration_eligibility", fake_check_registration_eligibility)
     monkeypatch.setattr(bot, "reset_synapse_password", fake_reset_synapse_password)
 
-    asyncio.run(bot.reset_password(update, context))
+    asyncio.run(bot.reset_password_confirm_callback(update, context))
 
-    assert "временно недоступен" in update.message.sent[-1]["text"].lower()
+    assert "временно недоступен" in base_update.message.sent[-1]["text"].lower()
 
 
 def test_reset_password_failure_notifies_owner(monkeypatch):
     bot = load_bot_module(monkeypatch)
-    update = DummyUpdate(user_id=42, username="alice")
-    context = DummyContext(args=["confirm"])
+    base_update = DummyUpdate(user_id=42, username="alice")
+    update = DummyCallbackUpdate(user_id=42, username="alice", message=base_update.message)
+    context = DummyContext()
 
     bot.user_registration_times.clear()
     bot.password_reset_confirmations.clear()
@@ -2500,9 +2530,9 @@ def test_reset_password_failure_notifies_owner(monkeypatch):
     monkeypatch.setattr(bot, "reset_synapse_password", fake_reset_synapse_password)
     monkeypatch.setattr(bot, "notify_owner", fake_notify_owner)
 
-    asyncio.run(bot.reset_password(update, context))
+    asyncio.run(bot.reset_password_confirm_callback(update, context))
 
-    assert "Не удалось сбросить пароль" in update.message.sent[-1]["text"]
+    assert "Не удалось сбросить пароль" in base_update.message.sent[-1]["text"]
     assert len(notified) == 1
     assert "reset_error=RESET_FAILED" in notified[0]
 

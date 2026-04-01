@@ -982,45 +982,19 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("❌ Произошла ошибка при регистрации. Администраторы получили сообщение об этом и постараются как можно скорее всё починить")
 
 
-async def reset_password(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle password reset request for existing Matrix accounts."""
-    user_id = update.effective_user.id
-    username = normalize_telegram_handle(update.effective_user.username) or str(user_id)
-
-    now = time.time()
-    prune_registration_times(now)
-    prune_password_reset_confirmations(now)
-
-    is_confirmed = bool(context.args) and context.args[0].strip().lower() == "confirm"
-
-    if not is_confirmed:
-        password_reset_confirmations[user_id] = now
-        keyboard = InlineKeyboardMarkup(
-            [[InlineKeyboardButton("✅ Подтвердить сброс пароля", callback_data=PASSWORD_RESET_CONFIRM_CALLBACK)]]
-        )
-        await update.message.reply_text(
-            "⚠️ Внимание: сброс пароля приведет к выходу из аккаунта на всех устройствах.\n\n"
-            "Если у вас нет ключа восстановления (Recovery Key), вы потеряете доступ "
-            "ко всем зашифрованным сообщениям (в том числе в личных чатах).\n\n"
-            "Если вы уверены, нажмите кнопку ниже или отправьте команду: /reset_password confirm",
-            reply_markup=keyboard,
-        )
-        return
-
-    confirmation_ts = password_reset_confirmations.get(user_id)
-    if confirmation_ts is None:
-        await update.message.reply_text(
-            "ℹ️ Сначала подтвердите действие: отправьте /reset_password, затем /reset_password confirm"
-        )
-        return
-
-    password_reset_confirmations.pop(user_id, None)
-
+async def _execute_password_reset(
+    reply_target,
+    context: ContextTypes.DEFAULT_TYPE,
+    user_id: int,
+    username: str,
+    now: float,
+) -> None:
+    """Execute password reset after explicit confirmation."""
     if user_id in user_registration_times:
         time_since_last_attempt = now - user_registration_times[user_id]
         if time_since_last_attempt < REGISTRATION_RATE_LIMIT:
             remaining_minutes = int((REGISTRATION_RATE_LIMIT - time_since_last_attempt) / 60) + 1
-            await update.message.reply_text(
+            await reply_target.reply_text(
                 f"⏳ Вы уже пробовали сбросить пароль. Подождите {remaining_minutes} минут и попробуйте снова."
             )
             logger.warning(f"Password reset rate limit exceeded for password reset {user_id} ({username})")
@@ -1029,18 +1003,18 @@ async def reset_password(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user_registration_times[user_id] = now
 
     try:
-        await update.message.reply_text("Проверяю вашу благонадежность...")
+        await reply_target.reply_text("Проверяю вашу благонадежность...")
 
         is_eligible, eligibility_check_ok, _, _ = await check_registration_eligibility(username)
 
         if not eligibility_check_ok:
-            await update.message.reply_text(
+            await reply_target.reply_text(
                 "❌ Не удалось проверить данные. Пожалуйста, попробуйте еще раз через пару минут."
             )
             return
 
         if not is_eligible:
-            await update.message.reply_text(
+            await reply_target.reply_text(
                 "❌ Ваш Telegram-аккаунт не найден в таблице People или для вас включен черный список."
             )
             return
@@ -1050,11 +1024,11 @@ async def reset_password(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
         if not reset_ok:
             if reset_error == "RESET_TOKEN_MISSING":
-                await update.message.reply_text(
+                await reply_target.reply_text(
                     "❌ Сброс пароля временно недоступен. Обратитесь к администратору."
                 )
             else:
-                await update.message.reply_text(
+                await reply_target.reply_text(
                     "❌ Не удалось сбросить пароль. Попробуйте сначала зарегистрироваться: /register."
                 )
                 await notify_owner(
@@ -1071,7 +1045,7 @@ async def reset_password(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         safe_password = html.escape(temp_password)
         safe_element_url = html.escape(ELEMENT_URL)
         safe_help_url = html.escape(HELP_URL)
-        await update.message.reply_text(
+        await reply_target.reply_text(
             (
                 "✅ Пароль сброшен!\n\n"
                 "<b>Имя пользователя:</b>\n"
@@ -1090,7 +1064,32 @@ async def reset_password(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             context,
             f"⚠️ Ошибка сброса пароля\nuser_id={user_id}\nusername={username}\nerror={e}",
         )
-        await update.message.reply_text("❌ Произошла ошибка при сбросе пароля. Администраторы получили сообщение об этом и постараются как можно скорее всё починить")
+        await reply_target.reply_text("❌ Произошла ошибка при сбросе пароля. Администраторы получили сообщение об этом и постараются как можно скорее всё починить")
+
+
+async def reset_password(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle password reset request for existing Matrix accounts."""
+    user_id = update.effective_user.id
+    username = normalize_telegram_handle(update.effective_user.username) or str(user_id)
+    reply_target = update.effective_message
+    if reply_target is None:
+        return
+
+    now = time.time()
+    prune_registration_times(now)
+    prune_password_reset_confirmations(now)
+
+    password_reset_confirmations[user_id] = now
+    keyboard = InlineKeyboardMarkup(
+        [[InlineKeyboardButton("✅ Подтвердить сброс пароля", callback_data=PASSWORD_RESET_CONFIRM_CALLBACK)]]
+    )
+    await reply_target.reply_text(
+        "⚠️ Внимание: сброс пароля приведет к выходу из аккаунта на всех устройствах.\n\n"
+        "Если у вас нет ключа восстановления (Recovery Key), вы потеряете доступ "
+        "ко всем зашифрованным сообщениям (в том числе в личных чатах).\n\n"
+        "Если вы уверены, нажмите кнопку ниже.",
+        reply_markup=keyboard,
+    )
 
 
 async def reset_password_confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1113,9 +1112,14 @@ async def reset_password_confirm_callback(update: Update, context: ContextTypes.
     prune_registration_times(now)
     prune_password_reset_confirmations(now)
 
+    reply_target = query.message
+    if reply_target is None:
+        await query.answer("Сообщение подтверждения не найдено", show_alert=True)
+        return
+
     confirmation_ts = password_reset_confirmations.get(user_id)
     if confirmation_ts is None:
-        await query.message.reply_text(
+        await reply_target.reply_text(
             "ℹ️ Сначала подтвердите действие: отправьте /reset_password, затем нажмите кнопку подтверждения."
         )
         return
@@ -1128,8 +1132,7 @@ async def reset_password_confirm_callback(update: Update, context: ContextTypes.
         # Message can be old or already edited; it is safe to continue the flow.
         pass
 
-    context.args = ["confirm"]
-    await reset_password(update, context)
+    await _execute_password_reset(reply_target, context, user_id, username, now)
 
 
 def format_exception_chain(error: BaseException, max_depth: int = 4) -> str:

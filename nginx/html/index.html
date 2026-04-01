@@ -254,7 +254,7 @@
             list-style: none;
         }
 
-        .steps li {
+        .steps > li {
             display: grid;
             grid-template-columns: 2rem 1fr;
             gap: 0.62rem;
@@ -262,7 +262,7 @@
             margin: 0.85rem 0;
         }
 
-        .steps li::before {
+        .steps > li::before {
             counter-increment: quick;
             content: counter(quick);
             width: 2rem;
@@ -392,13 +392,13 @@
                 white-space: normal;
             }
 
-            .steps li {
+            .steps > li {
                 grid-template-columns: 2.2rem 1fr;
                 gap: 0.75rem;
                 margin: 1rem 0;
             }
 
-            .steps li::before {
+            .steps > li::before {
                 width: 2.2rem;
                 height: 2.2rem;
                 font-size: 1rem;
@@ -456,8 +456,14 @@
         <ol class="steps">
             <li>
                 <div>
-                    <strong>Зарегистрируйся в нашем ТГ боте (пока телега еще работает)</strong>
-                    <p>Бот для регистрации: <a class="text-link" href="https://t.me/insomnia_chat_registration_bot">@insomnia_chat_registration_bot</a>. <strong>Важно: обязательно скажите своему HR-менеджеру добавить вас в список волонтеров 2026.</strong> При входе в Element нужно выбрать опцию "другой домашний сервер" и указать <code>insomniafest.ru</code> (<a class="text-link" href="homeserver.png">вот так</a>). После входа сразу смените пароль. (Как оказалось, в мобильных приложениях сделать этого нельзя, зато в <a href="https://chat.insomniafest.ru">браузерной версии</a> или в десктоп-клиенте можно.)</p>
+                    <strong>Зарегистрируйся (через бота или через HR)</strong>
+                    <p>Есть два варианта регистрации:</p>
+                    <ul>
+                        <li><a class="text-link" href="https://t.me/insomnia_chat_registration_bot">Бот для регистрации</a></li>
+                        <li>Ваш HR может зарегистрировать вас, если у вас нет Телеграма или доступа к нему</li>
+                    </ul>
+                    <p>Если вы потеряли логин или пароль, их также можно получить через бота или у HR. При входе в Element нужно выбрать опцию "другой домашний сервер" и указать <code>insomniafest.ru</code> (<a class="text-link" href="homeserver.png">вот так</a>). После входа сразу смените пароль. (Как оказалось, в мобильных приложениях сделать этого нельзя, зато в <a href="https://chat.insomniafest.ru">браузерной версии</a> или в десктоп-клиенте можно.)</p>
+                    <p>Все волонтеры Бессонницы могут зарегистрироваться в Бессонном Чате. Волонтеры 2026, добавленные в таблицу Участия 2026 в Гристе, автоматически получат доступ в командные комнаты при регистрации.</p>
                 </div>
             </li>
             <li>

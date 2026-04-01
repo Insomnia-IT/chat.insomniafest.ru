@@ -652,6 +652,8 @@ def test_ops_register_reports_full_flow_results(monkeypatch):
     assert "Логин: test_member" in text
     assert "Временный пароль:" in text
     assert "Вход: https://chat.insomniafest.ru" in text
+    assert "Если потеряешь логин или пароль, их можно получить через бота или у HR." in text
+    assert "Участие в таблице не обязательно для входа в чат, но нужно для автоматического добавления в командный чат." in text
     assert "Инструкция: https://chat.insomniafest.ru/help" in text
     assert "Не добавлен в командные комнаты: GR" in text
     assert "Не выданы права администратора: GR" in text

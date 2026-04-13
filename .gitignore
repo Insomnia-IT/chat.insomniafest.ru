@@ -1,11 +1,8 @@
 .DS_Store
-nginx/html/downloads/*
-!nginx/html/downloads/.gitkeep
 data/postgres/*
 !data/postgres/.gitkeep
 .env
 .env.*
-!.env.example
 config/synapse/homeserver.yaml
 *.key
 .pytest_cache/
